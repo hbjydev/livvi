@@ -1,30 +1,66 @@
 use anyhow::Result;
 
-pub struct Agent {
-    rx: mpsc::Receiver<Interrupt>,
+use crate::{model::{Role, Transcript, TranscriptContent, TranscriptItem}, provider::{Provider, ProviderResponse}, tool::Tools};
+
+pub const MAX_ITERATIONS: usize = 10;
+
+pub struct Agent<P: Provider> {
+    provider: P,
+    tools: Tools,
 }
 
-impl Agent {
-    pub fn new() -> Self {
-        Self {}
+impl<P: Provider> Agent<P> {
+    pub fn new(provider: P, tools: Tools) -> Self {
+        Agent { provider, tools }
     }
 
-    pub fn sys_prompt(&self) -> Result<String> {
-        let instructions = include_str!("../prompts/instructions.md")/*.replace("{{name}}", &self.config.name)*/;
+    pub async fn run(&mut self, user_msg: impl Into<String>) -> Result<String> {
+        let mut transcript = Transcript::new();
+        transcript.add_item(crate::model::TranscriptItem::user_message(user_msg));
 
-        Ok(format!("\n\n{instructions}"))
-    }
+        while transcript.items().len() < MAX_ITERATIONS {
+            let response = self.provider.complete(transcript.clone()).await;
+            if let Err(e) = response {
+                anyhow::bail!("Provider error: {:?}", e);
+            }
+            let response = response.unwrap();
 
-    pub async fn run(mut self) -> Result<()> {
-        let mut runtime_soul = self.sys_prompt()?;
+            match response {
+                ProviderResponse::Text(text) => {
+                    transcript.add_item(crate::model::TranscriptItem::assistant_message(text.clone()));
+                    return Ok(text);
+                },
 
-        let mut turn_count = 0usize;
-        let mut failure_count = 0usize;
+                ProviderResponse::ToolCall { tool_name, tool_args, .. } => {
+                    if tool_name.is_empty() {
+                        return Err(anyhow::anyhow!("Tool name is empty"));
+                    }
 
-        let mut last_event_at = std::time::Instant::now();
+                    let tool = self.tools.get_tool(&tool_name)
+                        .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
-        let mut skip_idle_nudge = false;
+                    let result = tool.call().await?;
 
-        Ok(())
+                    transcript.add_item(TranscriptItem {
+                        role: Role::Assistant,
+                        content: TranscriptContent::ToolUse {
+                            name: tool_name.clone(),
+                            id: "some_id".to_string(),
+                            input: tool_args.clone(),
+                        }
+                    });
+
+                    transcript.add_item(TranscriptItem {
+                        role: Role::Assistant,
+                        content: TranscriptContent::ToolResult {
+                            id: "some_id".to_string(),
+                            content: result.clone(),
+                        }
+                    });
+                },
+            };
+        }
+
+        Err(anyhow::anyhow!("Max iterations reached without a final response"))
     }
 }
