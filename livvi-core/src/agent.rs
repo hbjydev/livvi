@@ -40,7 +40,7 @@ impl<P: Provider> Agent<P> {
                 ProviderResponse::ToolCall {
                     tool_name,
                     tool_args,
-                    ..
+                    tool_call_id,
                 } => {
                     if tool_name.is_empty() {
                         return Err(anyhow::anyhow!("Tool name is empty"));
@@ -51,13 +51,19 @@ impl<P: Provider> Agent<P> {
                         .get_tool(&tool_name)
                         .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
-                    let result = tool.call().await?;
+                    let validator = jsonschema::validator_for(tool.schema().input_schema.as_value())?;
+
+                    if !validator.is_valid(&tool_args) {
+                        anyhow::bail!("Invalid arguments for tool {}: {:?}", tool_name, tool_args);
+                    }
+
+                    let result = tool.call(tool_args.clone()).await?;
 
                     transcript.add_item(TranscriptItem {
                         role: Role::Assistant,
                         content: TranscriptContent::ToolUse {
                             name: tool_name.clone(),
-                            id: "some_id".to_string(),
+                            id: tool_call_id.clone(),
                             input: tool_args.clone(),
                         },
                     });
@@ -65,7 +71,7 @@ impl<P: Provider> Agent<P> {
                     transcript.add_item(TranscriptItem {
                         role: Role::Assistant,
                         content: TranscriptContent::ToolResult {
-                            id: "some_id".to_string(),
+                            id: tool_call_id.clone(),
                             content: result.clone(),
                         },
                     });
@@ -85,6 +91,7 @@ mod tests {
     use async_trait::async_trait;
     use schemars::{JsonSchema, schema_for};
     use serde::{Deserialize, Serialize};
+    use serde_json::Value;
 
     use crate::{
         agent::Agent,
@@ -110,8 +117,9 @@ mod tests {
             }
         }
 
-        async fn call(&self) -> Result<String> {
-            Ok("4".to_string())
+        async fn call(&self, args: Value) -> Result<String> {
+            let input: CalcToolInput = serde_json::from_value(args)?;
+            Ok((input.a + input.b).to_string())
         }
     }
 
@@ -173,6 +181,28 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "Tool not found: missing-tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_fails_on_invalid_tool_args() {
+        let mut agent = setup_agent(vec![
+            crate::provider::ProviderResponse::ToolCall {
+                tool_name: "calc".to_string(),
+                tool_args: serde_json::json!({"first": 2, "second": 2}),
+                tool_call_id: "call-1".to_string(),
+            },
+            crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
+        ]);
+
+        let result = agent.run("What's 2+2?").await;
+
+        assert_eq!(result.is_err(), true);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .starts_with("Invalid arguments for tool")
         );
     }
 }

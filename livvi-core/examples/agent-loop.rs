@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use livvi_core::agent::Agent;
 use livvi_core::provider::{MockProvider, ProviderResponse};
 use livvi_core::tool::{Tool, ToolSchema, Tools};
+use serde_json::Value;
 
 pub struct CalcTool;
 
@@ -22,7 +23,7 @@ impl Tool for CalcTool {
         }
     }
 
-    async fn call(&self) -> Result<String> {
+    async fn call(&self, _args: Value) -> Result<String> {
         Ok("4".to_string())
     }
 }

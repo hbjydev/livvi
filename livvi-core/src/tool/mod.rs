@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde_json::Value;
 
 pub struct ToolSchema {
     pub name: String,
@@ -12,7 +13,7 @@ pub struct ToolSchema {
 #[async_trait]
 pub trait Tool {
     fn schema(&self) -> ToolSchema;
-    async fn call(&self) -> Result<String>;
+    async fn call(&self, args: Value) -> Result<String>;
 }
 
 pub struct Tools(HashMap<String, Arc<dyn Tool>>);
@@ -51,6 +52,7 @@ mod tests {
     use async_trait::async_trait;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
+    use serde_json::Value;
 
     use crate::tool::{Tool, ToolSchema};
 
@@ -70,7 +72,7 @@ mod tests {
             }
         }
 
-        async fn call(&self) -> Result<String> {
+        async fn call(&self, _args: Value) -> Result<String> {
             Ok("test_result".to_string())
         }
     }
