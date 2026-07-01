@@ -1,6 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use livvi_core::{agent::Agent, model::Transcript, provider::{MockProvider, ProviderResponse}, tool::{Tool, Tools}};
+use livvi_core::agent::Agent;
+use livvi_core::provider::{MockProvider, ProviderResponse};
+use livvi_core::tool::{Tool, Tools};
 
 pub struct CalcTool;
 

@@ -16,7 +16,7 @@ pub enum TranscriptContent {
     ToolResult {
         id: String,
         content: String,
-    }
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -62,5 +62,11 @@ impl Transcript {
 
     pub fn items(&self) -> Vec<TranscriptItem> {
         self.0.clone()
+    }
+}
+
+impl Default for Transcript {
+    fn default() -> Self {
+        Transcript::new()
     }
 }

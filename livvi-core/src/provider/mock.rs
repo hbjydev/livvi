@@ -1,9 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::{model::Transcript, provider::{Provider, ProviderResponse}};
+use crate::{
+    model::Transcript,
+    provider::{Provider, ProviderResponse},
+};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MockProvider {
     responses: Vec<ProviderResponse>,
     index: usize,
@@ -11,14 +14,8 @@ pub struct MockProvider {
 
 impl MockProvider {
     pub fn new(responses: Vec<ProviderResponse>) -> Self {
-        MockProvider { responses, index: 0 }
-    }
-}
-
-impl Default for MockProvider {
-    fn default() -> Self {
         MockProvider {
-            responses: vec![],
+            responses,
             index: 0,
         }
     }

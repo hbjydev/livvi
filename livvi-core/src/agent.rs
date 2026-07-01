@@ -1,6 +1,10 @@
 use anyhow::Result;
 
-use crate::{model::{Role, Transcript, TranscriptContent, TranscriptItem}, provider::{Provider, ProviderResponse}, tool::Tools};
+use crate::{
+    model::{Role, Transcript, TranscriptContent, TranscriptItem},
+    provider::{Provider, ProviderResponse},
+    tool::Tools,
+};
 
 pub const MAX_ITERATIONS: usize = 10;
 
@@ -27,16 +31,24 @@ impl<P: Provider> Agent<P> {
 
             match response {
                 ProviderResponse::Text(text) => {
-                    transcript.add_item(crate::model::TranscriptItem::assistant_message(text.clone()));
+                    transcript.add_item(crate::model::TranscriptItem::assistant_message(
+                        text.clone(),
+                    ));
                     return Ok(text);
-                },
+                }
 
-                ProviderResponse::ToolCall { tool_name, tool_args, .. } => {
+                ProviderResponse::ToolCall {
+                    tool_name,
+                    tool_args,
+                    ..
+                } => {
                     if tool_name.is_empty() {
                         return Err(anyhow::anyhow!("Tool name is empty"));
                     }
 
-                    let tool = self.tools.get_tool(&tool_name)
+                    let tool = self
+                        .tools
+                        .get_tool(&tool_name)
                         .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
                     let result = tool.call().await?;
@@ -47,7 +59,7 @@ impl<P: Provider> Agent<P> {
                             name: tool_name.clone(),
                             id: "some_id".to_string(),
                             input: tool_args.clone(),
-                        }
+                        },
                     });
 
                     transcript.add_item(TranscriptItem {
@@ -55,12 +67,14 @@ impl<P: Provider> Agent<P> {
                         content: TranscriptContent::ToolResult {
                             id: "some_id".to_string(),
                             content: result.clone(),
-                        }
+                        },
                     });
-                },
+                }
             };
         }
 
-        Err(anyhow::anyhow!("Max iterations reached without a final response"))
+        Err(anyhow::anyhow!(
+            "Max iterations reached without a final response"
+        ))
     }
 }

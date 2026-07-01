@@ -26,7 +26,17 @@ impl Tools {
     }
 
     pub fn get_tool(&self, tool_name: &str) -> Option<&dyn Tool> {
-        self.0.iter().into_iter().find(|tool| tool.0 == tool_name).map(|t| t.1.as_ref())
+        self.0
+            .iter()
+            .into_iter()
+            .find(|tool| tool.0 == tool_name)
+            .map(|t| t.1.as_ref())
+    }
+}
+
+impl Default for Tools {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
