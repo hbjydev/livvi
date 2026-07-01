@@ -10,7 +10,7 @@ pub use mock::MockProvider;
 pub enum ProviderResponse {
     ToolCall {
         tool_name: String,
-        tool_args: String,
+        tool_args: serde_json::Value,
         tool_call_id: String,
     },
     Text(String),

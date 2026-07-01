@@ -45,7 +45,7 @@ mod tests {
             ProviderResponse::Text("Hello".to_string()),
             ProviderResponse::ToolCall {
                 tool_name: "tool1".to_string(),
-                tool_args: "arg1".to_string(),
+                tool_args: serde_json::json!({"expr": "hello"}),
                 tool_call_id: "id1".to_string(),
             },
         ];

@@ -83,19 +83,31 @@ impl<P: Provider> Agent<P> {
 mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
+    use schemars::{JsonSchema, schema_for};
+    use serde::{Deserialize, Serialize};
 
-    use crate::{agent::Agent, provider::{MockProvider, ProviderResponse}, tool::{Tool, Tools}};
+    use crate::{
+        agent::Agent,
+        provider::{MockProvider, ProviderResponse},
+        tool::{Tool, ToolSchema, Tools},
+    };
 
     pub struct CalcTool;
 
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    pub struct CalcToolInput {
+        pub a: i32,
+        pub b: i32,
+    }
+
     #[async_trait]
     impl Tool for CalcTool {
-        fn name(&self) -> String {
-            "calc".to_string()
-        }
-
-        fn schema(&self) -> String {
-            "calc_schema".to_string()
+        fn schema(&self) -> ToolSchema {
+            ToolSchema {
+                name: "calc".to_string(),
+                description: "A simple calculator tool".to_string(),
+                input_schema: schema_for!(CalcToolInput),
+            }
         }
 
         async fn call(&self) -> Result<String> {
@@ -115,7 +127,7 @@ mod tests {
         let mut agent = setup_agent(vec![
             crate::provider::ProviderResponse::ToolCall {
                 tool_name: "calc".to_string(),
-                tool_args: "0=2,1=2".to_string(),
+                tool_args: serde_json::json!({"a": 2, "b": 2}),
                 tool_call_id: "call-1".to_string(),
             },
             crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
@@ -132,7 +144,7 @@ mod tests {
         let mut agent = setup_agent(vec![
             crate::provider::ProviderResponse::ToolCall {
                 tool_name: "".to_string(),
-                tool_args: "0=2,1=2".to_string(),
+                tool_args: serde_json::json!({"a": 2, "b": 2}),
                 tool_call_id: "call-1".to_string(),
             },
             crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
@@ -149,7 +161,7 @@ mod tests {
         let mut agent = setup_agent(vec![
             crate::provider::ProviderResponse::ToolCall {
                 tool_name: "missing-tool".to_string(),
-                tool_args: "0=2,1=2".to_string(),
+                tool_args: serde_json::json!({"a": 2, "b": 2}),
                 tool_call_id: "call-1".to_string(),
             },
             crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
@@ -158,6 +170,9 @@ mod tests {
         let result = agent.run("What's 2+2?").await;
 
         assert_eq!(result.is_err(), true);
-        assert_eq!(result.unwrap_err().to_string(), "Tool not found: missing-tool");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Tool not found: missing-tool"
+        );
     }
 }

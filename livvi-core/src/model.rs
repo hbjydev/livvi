@@ -11,7 +11,7 @@ pub enum TranscriptContent {
     ToolUse {
         name: String,
         id: String,
-        input: String,
+        input: serde_json::Value,
     },
     ToolResult {
         id: String,

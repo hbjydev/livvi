@@ -2,18 +2,24 @@ use anyhow::Result;
 use async_trait::async_trait;
 use livvi_core::agent::Agent;
 use livvi_core::provider::{MockProvider, ProviderResponse};
-use livvi_core::tool::{Tool, Tools};
+use livvi_core::tool::{Tool, ToolSchema, Tools};
 
 pub struct CalcTool;
 
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CalcToolInput {
+    pub a: i32,
+    pub b: i32,
+}
+
 #[async_trait]
 impl Tool for CalcTool {
-    fn name(&self) -> String {
-        "calc".to_string()
-    }
-
-    fn schema(&self) -> String {
-        "calc_schema".to_string()
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "calc".to_string(),
+            description: "A simple calculator tool".to_string(),
+            input_schema: schemars::schema_for!(CalcToolInput),
+        }
     }
 
     async fn call(&self) -> Result<String> {
@@ -29,7 +35,7 @@ async fn main() -> Result<()> {
     let provider = MockProvider::new(vec![
         ProviderResponse::ToolCall {
             tool_name: "calc".to_string(),
-            tool_args: "0=2,1=2".to_string(),
+            tool_args: serde_json::json!({"a": 2, "b": 2}),
             tool_call_id: "call-1".to_string(),
         },
         ProviderResponse::Text("2 + 2 is 4.".to_string()),
