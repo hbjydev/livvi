@@ -144,7 +144,7 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert_eq!(result.is_ok(), true);
+        assert!(result.is_ok());
         assert_eq!(result.unwrap(), "2 + 2 is 4.");
     }
 
@@ -161,7 +161,7 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert_eq!(result.is_err(), true);
+        assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Tool name is empty");
     }
 
@@ -178,7 +178,7 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert_eq!(result.is_err(), true);
+        assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
             "Tool not found: missing-tool"
@@ -198,7 +198,7 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert_eq!(result.is_err(), true);
+        assert!(result.is_err());
         assert!(
             result
                 .unwrap_err()
