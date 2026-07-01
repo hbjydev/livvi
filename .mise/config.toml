@@ -15,8 +15,8 @@ description = "Compile the whole workspace (debug, locked deps)"
 run = "cargo build --workspace --locked"
 
 [tasks.build-release]
-description = "Compile the release binaries we ship (controller, webhook, mover)"
-run = "cargo build --release --locked -p kopiur-controller -p kopiur-webhook -p kopiur-mover"
+description = "Compile the release binaries we ship (daemon)"
+run = "cargo build --release --locked -p livvi-daemon"
 
 [tasks.rust-components]
 description = "Install Rust components required by project tasks"
