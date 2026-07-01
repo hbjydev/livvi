@@ -51,7 +51,8 @@ impl<P: Provider> Agent<P> {
                         .get_tool(&tool_name)
                         .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
-                    let validator = jsonschema::validator_for(tool.schema().input_schema.as_value())?;
+                    let validator =
+                        jsonschema::validator_for(tool.schema().input_schema.as_value())?;
 
                     if !validator.is_valid(&tool_args) {
                         anyhow::bail!("Invalid arguments for tool {}: {:?}", tool_name, tool_args);
