@@ -78,3 +78,86 @@ impl<P: Provider> Agent<P> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use async_trait::async_trait;
+
+    use crate::{agent::Agent, provider::{MockProvider, ProviderResponse}, tool::{Tool, Tools}};
+
+    pub struct CalcTool;
+
+    #[async_trait]
+    impl Tool for CalcTool {
+        fn name(&self) -> String {
+            "calc".to_string()
+        }
+
+        fn schema(&self) -> String {
+            "calc_schema".to_string()
+        }
+
+        async fn call(&self) -> Result<String> {
+            Ok("4".to_string())
+        }
+    }
+
+    fn setup_agent(responses: Vec<ProviderResponse>) -> Agent<MockProvider> {
+        let mut tools = Tools::new();
+        tools.add_tool(CalcTool);
+        let provider = MockProvider::new(responses);
+        Agent::new(provider, tools)
+    }
+
+    #[tokio::test]
+    async fn test_agent_runs() {
+        let mut agent = setup_agent(vec![
+            crate::provider::ProviderResponse::ToolCall {
+                tool_name: "calc".to_string(),
+                tool_args: "0=2,1=2".to_string(),
+                tool_call_id: "call-1".to_string(),
+            },
+            crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
+        ]);
+
+        let result = agent.run("What's 2+2?").await;
+
+        assert_eq!(result.is_ok(), true);
+        assert_eq!(result.unwrap(), "2 + 2 is 4.");
+    }
+
+    #[tokio::test]
+    async fn test_agent_fails_on_missing_tool_name() {
+        let mut agent = setup_agent(vec![
+            crate::provider::ProviderResponse::ToolCall {
+                tool_name: "".to_string(),
+                tool_args: "0=2,1=2".to_string(),
+                tool_call_id: "call-1".to_string(),
+            },
+            crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
+        ]);
+
+        let result = agent.run("What's 2+2?").await;
+
+        assert_eq!(result.is_err(), true);
+        assert_eq!(result.unwrap_err().to_string(), "Tool name is empty");
+    }
+
+    #[tokio::test]
+    async fn test_agent_fails_on_missing_tool() {
+        let mut agent = setup_agent(vec![
+            crate::provider::ProviderResponse::ToolCall {
+                tool_name: "missing-tool".to_string(),
+                tool_args: "0=2,1=2".to_string(),
+                tool_call_id: "call-1".to_string(),
+            },
+            crate::provider::ProviderResponse::Text("2 + 2 is 4.".to_string()),
+        ]);
+
+        let result = agent.run("What's 2+2?").await;
+
+        assert_eq!(result.is_err(), true);
+        assert_eq!(result.unwrap_err().to_string(), "Tool not found: missing-tool");
+    }
+}
