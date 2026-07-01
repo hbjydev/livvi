@@ -1,3 +1,9 @@
+use std::time::Instant;
+
+use serde_json::{Value, json};
+
+use crate::provider::ProviderResponse;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -6,44 +12,122 @@ pub enum Role {
 }
 
 #[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub name: String,
+    pub id: String,
+    pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub id: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone)]
 pub enum TranscriptContent {
     Text(String),
-    ToolUse {
-        name: String,
-        id: String,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        id: String,
-        content: String,
-    },
+    ToolCall(ToolCall),
+    ToolResult(ToolResult),
+    Reasoning { metadata: Value, text: String },
 }
 
 #[derive(Debug, Clone)]
 pub struct TranscriptItem {
     pub role: Role,
-    pub content: TranscriptContent,
+    pub blocks: Vec<TranscriptContent>,
+    pub created_at: Instant,
 }
 
 impl TranscriptItem {
     pub fn user_message(content: impl Into<String>) -> Self {
         TranscriptItem {
             role: Role::User,
-            content: TranscriptContent::Text(content.into()),
+            blocks: vec![TranscriptContent::Text(content.into())],
+            created_at: Instant::now(),
         }
     }
 
     pub fn assistant_message(content: impl Into<String>) -> Self {
         TranscriptItem {
             role: Role::Assistant,
-            content: TranscriptContent::Text(content.into()),
+            blocks: vec![TranscriptContent::Text(content.into())],
+            created_at: Instant::now(),
+        }
+    }
+
+    pub fn assistant_reasoning(content: impl Into<String>) -> Self {
+        TranscriptItem {
+            role: Role::Assistant,
+            blocks: vec![TranscriptContent::Reasoning {
+                text: content.into(),
+                metadata: json!({}),
+            }],
+            created_at: Instant::now(),
+        }
+    }
+
+    pub fn assistant_tool_call(tool_call: ToolCall) -> Self {
+        TranscriptItem {
+            role: Role::Assistant,
+            blocks: vec![TranscriptContent::ToolCall(tool_call)],
+            created_at: Instant::now(),
+        }
+    }
+
+    pub fn tool_result(tool_result: ToolResult) -> Self {
+        TranscriptItem {
+            role: Role::Assistant,
+            blocks: vec![TranscriptContent::ToolResult(tool_result)],
+            created_at: Instant::now(),
         }
     }
 
     pub fn system_message(content: impl Into<String>) -> Self {
         TranscriptItem {
             role: Role::System,
-            content: TranscriptContent::Text(content.into()),
+            blocks: vec![TranscriptContent::Text(content.into())],
+            created_at: Instant::now(),
+        }
+    }
+}
+
+impl From<ProviderResponse> for TranscriptItem {
+    fn from(response: ProviderResponse) -> Self {
+        match response.value {
+            crate::provider::ProviderResponseValue::ToolCalls(calls) => {
+                let mut item = TranscriptItem {
+                    role: Role::Assistant,
+                    created_at: Instant::now(),
+                    blocks: vec![],
+                };
+
+                for call in calls {
+                    item.blocks.push(TranscriptContent::ToolCall(ToolCall {
+                        name: call.tool_name,
+                        id: call.tool_call_id,
+                        input: call.tool_args,
+                    }));
+                }
+
+                item
+            }
+            crate::provider::ProviderResponseValue::Text(text) => {
+                TranscriptItem::assistant_message(text)
+            }
+            crate::provider::ProviderResponseValue::Reasoning(reasoning) => TranscriptItem {
+                role: Role::Assistant,
+                blocks: vec![TranscriptContent::Reasoning {
+                    metadata: serde_json::json!({
+                        "input_tokens": response.input_tokens,
+                        "output_tokens": response.output_tokens,
+                        "reasoning_tokens": response.reasoning_tokens
+                    }),
+                    text: reasoning,
+                }],
+                created_at: Instant::now(),
+            },
         }
     }
 }

@@ -37,16 +37,28 @@ impl Provider for MockProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::provider::{ProviderResponseToolCall, ProviderResponseValue};
+
     #[tokio::test]
     async fn test_mock_provider() {
         use super::*;
 
         let responses = vec![
-            ProviderResponse::Text("Hello".to_string()),
-            ProviderResponse::ToolCall {
-                tool_name: "tool1".to_string(),
-                tool_args: serde_json::json!({"expr": "hello"}),
-                tool_call_id: "id1".to_string(),
+            ProviderResponse {
+                value: ProviderResponseValue::Text("Hello".to_string()),
+                input_tokens: 0,
+                output_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            ProviderResponse {
+                value: ProviderResponseValue::ToolCalls(vec![ProviderResponseToolCall {
+                    tool_name: "tool1".to_string(),
+                    tool_args: serde_json::json!({"expr": "hello"}),
+                    tool_call_id: "id1".to_string(),
+                }]),
+                input_tokens: 0,
+                output_tokens: 0,
+                reasoning_tokens: 0,
             },
         ];
 
@@ -55,10 +67,13 @@ mod tests {
         // Test that it returns the expected responses in order
         let transcript = Transcript::new();
         let response1 = provider.complete(transcript.clone()).await.unwrap();
-        assert!(matches!(response1, ProviderResponse::Text(_)));
+        assert!(matches!(response1.value, ProviderResponseValue::Text(_)));
 
         let response2 = provider.complete(transcript).await.unwrap();
-        assert!(matches!(response2, ProviderResponse::ToolCall { .. }));
+        assert!(matches!(
+            response2.value,
+            ProviderResponseValue::ToolCalls(..)
+        ));
 
         // Test that it runs out of responses
         let result = provider.complete(Transcript::new()).await;
