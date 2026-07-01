@@ -1,0 +1,55 @@
+[settings]
+experimental = true
+
+[env]
+_.file = "{{ config_root }}/.env"
+
+[tools]
+rust = { version = "1.96.0", components = "rustfmt,clippy,llvm-tools-preview" }
+"aqua:EmbarkStudios/cargo-deny" = "0.19.9"
+"aqua:taiki-e/cargo-llvm-cov" = "0.8.7"
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.138"
+
+[tasks.build]
+description = "Compile the whole workspace (debug, locked deps)"
+run = "cargo build --workspace --locked"
+
+[tasks.build-release]
+description = "Compile the release binaries we ship (controller, webhook, mover)"
+run = "cargo build --release --locked -p kopiur-controller -p kopiur-webhook -p kopiur-mover"
+
+[tasks.rust-components]
+description = "Install Rust components required by project tasks"
+run = "rustup component add rustfmt clippy llvm-tools-preview"
+
+[tasks.test]
+description = "Hermetic test suite: unit + serde + validation (no cluster, no network)"
+run = "cargo test --workspace --locked"
+
+[tasks.clippy]
+description = "Clippy across the workspace, warnings are errors"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.fmt]
+description = "Format the workspace in place"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Verify formatting without changing files (CI gate)"
+run = "cargo fmt --all -- --check"
+
+[tasks.cov]
+description = "Coverage over the hermetic suite -> lcov.info (report-only; no threshold)"
+run = "cargo llvm-cov --workspace --locked --lcov --output-path lcov.info"
+
+[tasks.cov-html]
+description = "Coverage as a browsable HTML report under target/llvm-cov/html"
+run = "cargo llvm-cov --workspace --locked --html"
+
+[tasks.cov-summary]
+description = "Coverage summary printed to the terminal"
+run = "cargo llvm-cov --workspace --locked --summary-only"
+
+[tasks.audit]
+description = "Supply-chain + license audit"
+run = "cargo deny check"

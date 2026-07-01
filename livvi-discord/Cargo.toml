@@ -1,0 +1,10 @@
+[package]
+name = "livvi-discord"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+exclude.workspace = true
+authors.workspace = true
+
+[dependencies]
