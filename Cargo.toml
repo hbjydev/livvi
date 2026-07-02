@@ -30,6 +30,9 @@ reqwest = "0.12"
 openai-api-rs = "10.0.1"
 
 livvi-core = { path = "livvi-core" }
+livvi-core-macros = { path = "livvi-core-macros" }
+livvi-discord = { path = "livvi-discord" }
+livvi-openai = { path = "livvi-openai" }
 
 [profile.dev]
 opt-level = 2
