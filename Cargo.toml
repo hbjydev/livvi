@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["livvi-core", "livvi-daemon", "livvi-discord"]
+members = ["livvi-core", "livvi-daemon", "livvi-discord", "livvi-openai"]
 
 [workspace.package]
 edition = "2024"
@@ -24,6 +24,10 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = { version = "1", features = ["v4"] }
 mpsc = "0.3"
+
+openai-api-rs = "10.0.1"
+
+livvi-core = { path = "livvi-core" }
 
 [profile.dev]
 opt-level = 2
