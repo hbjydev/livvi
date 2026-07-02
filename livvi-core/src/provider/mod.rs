@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::model::Transcript;
+use crate::{model::Transcript, tool::Tools};
 
 mod mock;
 pub use mock::MockProvider;
@@ -30,5 +30,5 @@ pub struct ProviderResponse {
 
 #[async_trait]
 pub trait Provider: Send + Sync + 'static {
-    async fn complete(&mut self, transcript: Transcript) -> Result<ProviderResponse>;
+    async fn complete(&mut self, transcript: Transcript, tools: Tools) -> Result<ProviderResponse>;
 }

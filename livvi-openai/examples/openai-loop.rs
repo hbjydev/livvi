@@ -44,7 +44,9 @@ async fn main() -> Result<()> {
 
     let mut agent = Agent::new(provider, tools);
 
-    let result = agent.run("Hello there, what's 2+2?").await?;
+    let result = agent
+        .run("Hello there, what's 2+2? Use the calc tool")
+        .await?;
     for item in result.items().iter() {
         println!("{:?}", item);
     }

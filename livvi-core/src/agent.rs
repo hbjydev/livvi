@@ -41,7 +41,10 @@ impl<P: Provider> Agent<P> {
         transcript.add_item(crate::model::TranscriptItem::user_message(user_msg));
 
         while transcript.items().len() < MAX_ITERATIONS {
-            let response = self.provider.complete(transcript.clone()).await;
+            let response = self
+                .provider
+                .complete(transcript.clone(), self.tools.clone())
+                .await;
             if let Err(e) = response {
                 anyhow::bail!("Provider error: {:?}", e);
             }

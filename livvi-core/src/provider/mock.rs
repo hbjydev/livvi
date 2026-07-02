@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use crate::{
     model::Transcript,
     provider::{Provider, ProviderResponse},
+    tool::Tools,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -23,7 +24,11 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
-    async fn complete(&mut self, _transcript: Transcript) -> Result<ProviderResponse> {
+    async fn complete(
+        &mut self,
+        _transcript: Transcript,
+        _tools: Tools,
+    ) -> Result<ProviderResponse> {
         if self.index >= self.responses.len() {
             anyhow::bail!("Mock ran out of responses");
         }
@@ -66,17 +71,21 @@ mod tests {
 
         // Test that it returns the expected responses in order
         let transcript = Transcript::new();
-        let response1 = provider.complete(transcript.clone()).await.unwrap();
+        let tools = Tools::new();
+        let response1 = provider
+            .complete(transcript.clone(), tools.clone())
+            .await
+            .unwrap();
         assert!(matches!(response1.value, ProviderResponseValue::Text(_)));
 
-        let response2 = provider.complete(transcript).await.unwrap();
+        let response2 = provider.complete(transcript, tools.clone()).await.unwrap();
         assert!(matches!(
             response2.value,
             ProviderResponseValue::ToolCalls(..)
         ));
 
         // Test that it runs out of responses
-        let result = provider.complete(Transcript::new()).await;
+        let result = provider.complete(Transcript::new(), tools).await;
         assert!(result.is_err());
     }
 }

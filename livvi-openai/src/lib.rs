@@ -3,12 +3,14 @@ use async_trait::async_trait;
 use livvi_core::{
     model::{ToolCall, ToolResult, Transcript, TranscriptContent, TranscriptItem},
     provider::{Provider, ProviderResponse, ProviderResponseValue},
+    tool::{ToolSchema, Tools},
 };
 use openai_api_rs::v1::{
     api::OpenAIClient,
     responses::responses::{CreateResponseRequest, ResponseObject},
+    types::{self, Function, FunctionParameters, JSONSchemaDefine, JSONSchemaType, ToolsFunction},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 pub struct OpenAIProvider {
     client: OpenAIClient,
@@ -32,15 +34,21 @@ impl OpenAIProvider {
 
 #[async_trait]
 impl Provider for OpenAIProvider {
-    async fn complete(&mut self, transcript: Transcript) -> Result<ProviderResponse> {
+    async fn complete(&mut self, transcript: Transcript, tools: Tools) -> Result<ProviderResponse> {
         let mut input_items = vec![];
         for item in transcript.items() {
             input_items.extend(into_openai(item)?);
         }
 
+        let mut tool_items = vec![];
+        for tool in tools.schemas() {
+            tool_items.push(tool_to_responses(tool));
+        }
+
         let mut req = CreateResponseRequest::new();
         req.model = Some(self.model_name.clone());
         req.input = Some(input_items.into());
+        req.tools = Some(tool_items);
 
         let res = self
             .client
@@ -208,6 +216,93 @@ fn into_openai(ti: TranscriptItem) -> Result<Vec<serde_json::Value>> {
     }
 
     Ok(items)
+}
+
+fn tool_to_responses(tool: ToolSchema) -> types::Tools {
+    types::Tools::Function(ToolsFunction {
+        function: Function {
+            name: tool.name,
+            description: Some(tool.description),
+            parameters: schema_to_function_parameters(tool.input_schema),
+        },
+    })
+}
+
+fn schema_to_function_parameters(schema: schemars::Schema) -> FunctionParameters {
+    function_parameters_from_value(schema.as_value())
+}
+
+fn function_parameters_from_value(value: &Value) -> FunctionParameters {
+    FunctionParameters {
+        schema_type: value
+            .get("type")
+            .and_then(json_schema_type_from_value)
+            .unwrap_or(JSONSchemaType::Object),
+        properties: value
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v))))
+                    .collect()
+            }),
+        required: value.get("required").and_then(|r| r.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+    }
+}
+
+fn json_schema_define_from_value(value: &Value) -> JSONSchemaDefine {
+    JSONSchemaDefine {
+        schema_type: value.get("type").and_then(json_schema_type_from_value),
+        description: value
+            .get("description")
+            .and_then(|v| v.as_str().map(|s| s.to_string())),
+        enum_values: value.get("enum").and_then(|e| e.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        properties: value
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v))))
+                    .collect()
+            }),
+        required: value.get("required").and_then(|r| r.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        items: value
+            .get("items")
+            .map(|v| Box::new(json_schema_define_from_value(v))),
+    }
+}
+
+fn json_schema_type_from_value(value: &Value) -> Option<JSONSchemaType> {
+    let type_str = match value {
+        Value::String(s) => Some(s.as_str()),
+        Value::Array(arr) => arr.first().and_then(|v| v.as_str()),
+        _ => None,
+    }?;
+
+    match type_str {
+        "object" => Some(JSONSchemaType::Object),
+        "array" => Some(JSONSchemaType::Array),
+        "number" => Some(JSONSchemaType::Number),
+        "integer" => Some(JSONSchemaType::Number),
+        "string" => Some(JSONSchemaType::String),
+        "boolean" => Some(JSONSchemaType::Boolean),
+        "null" => Some(JSONSchemaType::Null),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +497,55 @@ mod tests {
         match resp.value {
             ProviderResponseValue::Reasoning(text) => assert_eq!(text, "Thinking..."),
             _ => panic!("expected reasoning response"),
+        }
+    }
+
+    #[test]
+    fn tool_to_responses_maps_schemars_schema() {
+        #[allow(dead_code)]
+        #[derive(schemars::JsonSchema)]
+        struct CalcInput {
+            a: i32,
+            b: i32,
+        }
+
+        let schema = ToolSchema {
+            name: "calc".to_string(),
+            description: "Adds two numbers".to_string(),
+            input_schema: schemars::schema_for!(CalcInput),
+        };
+
+        let tool = tool_to_responses(schema);
+
+        match tool {
+            types::Tools::Function(func) => {
+                assert_eq!(func.function.name, "calc");
+                assert_eq!(
+                    func.function.description.as_deref(),
+                    Some("Adds two numbers")
+                );
+                assert_eq!(func.function.parameters.schema_type, JSONSchemaType::Object);
+
+                let props = func
+                    .function
+                    .parameters
+                    .properties
+                    .expect("expected properties");
+                assert!(props.contains_key("a"));
+                assert!(props.contains_key("b"));
+
+                assert_eq!(props["a"].schema_type, Some(JSONSchemaType::Number));
+                assert_eq!(props["b"].schema_type, Some(JSONSchemaType::Number));
+
+                let required = func
+                    .function
+                    .parameters
+                    .required
+                    .expect("expected required");
+                assert!(required.contains(&"a".to_string()));
+                assert!(required.contains(&"b".to_string()));
+            }
+            _ => panic!("expected function tool"),
         }
     }
 }

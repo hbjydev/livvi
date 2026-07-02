@@ -11,7 +11,7 @@ pub struct ToolSchema {
 }
 
 #[async_trait]
-pub trait Tool {
+pub trait Tool: Send + Sync {
     fn schema(&self) -> ToolSchema;
     fn validate_input(&self, args: &Value) -> Result<()> {
         let validator = jsonschema::validator_for(self.schema().input_schema.as_value())?;
@@ -30,11 +30,16 @@ pub trait Tool {
     async fn call(&self, args: Value) -> Result<String>;
 }
 
+#[derive(Clone, Default)]
 pub struct Tools(HashMap<String, Arc<dyn Tool>>);
 
 impl Tools {
     pub fn new() -> Self {
         Tools(HashMap::new())
+    }
+
+    pub fn schemas(&self) -> Vec<ToolSchema> {
+        self.0.values().map(|tool| tool.schema()).collect()
     }
 
     pub fn add_tool(&mut self, tool: impl Tool + 'static) {
@@ -51,12 +56,6 @@ impl Tools {
             .into_iter()
             .find(|tool| tool.0 == tool_name)
             .map(|t| t.1.as_ref())
-    }
-}
-
-impl Default for Tools {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
