@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use livvi_core::{
     model::{ToolCall, ToolResult, Transcript, TranscriptContent, TranscriptItem},
     provider::{Provider, ProviderResponse, ProviderResponseValue},
-    tool::{ToolSchema, Tools},
+    tool::{ToolDefinition, Tools},
 };
 use openai_api_rs::v1::{
     api::OpenAIClient,
@@ -218,7 +218,7 @@ fn into_openai(ti: TranscriptItem) -> Result<Vec<serde_json::Value>> {
     Ok(items)
 }
 
-fn tool_to_responses(tool: ToolSchema) -> types::Tools {
+fn tool_to_responses(tool: ToolDefinition) -> types::Tools {
     types::Tools::Function(ToolsFunction {
         function: Function {
             name: tool.name,
@@ -509,7 +509,7 @@ mod tests {
             b: i32,
         }
 
-        let schema = ToolSchema {
+        let schema = ToolDefinition {
             name: "calc".to_string(),
             description: "Adds two numbers".to_string(),
             input_schema: schemars::schema_for!(CalcInput),

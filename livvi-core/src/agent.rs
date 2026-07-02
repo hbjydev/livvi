@@ -139,7 +139,7 @@ impl<P: Provider> Agent<P> {
 mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
-    use schemars::{JsonSchema, schema_for};
+    use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
 
@@ -152,6 +152,12 @@ mod tests {
         tool::{Tool, ToolSchema, Tools},
     };
 
+    #[derive(ToolSchema)]
+    #[tool {
+        name = "calc",
+        input = CalcToolInput,
+    }]
+    /// A simple calculator tool
     pub struct CalcTool;
 
     #[derive(Serialize, Deserialize, JsonSchema)]
@@ -162,14 +168,6 @@ mod tests {
 
     #[async_trait]
     impl Tool for CalcTool {
-        fn schema(&self) -> ToolSchema {
-            ToolSchema {
-                name: "calc".to_string(),
-                description: "A simple calculator tool".to_string(),
-                input_schema: schema_for!(CalcToolInput),
-            }
-        }
-
         async fn call(&self, args: Value) -> Result<String> {
             let input: CalcToolInput = serde_json::from_value(args)?;
             Ok((input.a + input.b).to_string())

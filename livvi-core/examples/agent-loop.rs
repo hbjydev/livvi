@@ -7,6 +7,12 @@ use livvi_core::provider::{
 use livvi_core::tool::{Tool, ToolSchema, Tools};
 use serde_json::Value;
 
+#[derive(ToolSchema)]
+#[tool {
+    name = "calc",
+    input = CalcToolInput,
+}]
+/// A simple calculator tool
 pub struct CalcTool;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -17,14 +23,6 @@ pub struct CalcToolInput {
 
 #[async_trait]
 impl Tool for CalcTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "calc".to_string(),
-            description: "A simple calculator tool".to_string(),
-            input_schema: schemars::schema_for!(CalcToolInput),
-        }
-    }
-
     async fn call(&self, _args: Value) -> Result<String> {
         Ok("4".to_string())
     }

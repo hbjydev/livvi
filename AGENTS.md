@@ -19,11 +19,12 @@ use it as a check for how the code is meant to work necessarily.
 ## Workspace layout
 
 ```
-livvi-core/    The core logic & interfaces crate
-livvi-discord/ The Discord transport implementation
-livvi-openai/  The OpenAI LLM provider implementation
-livvi-daemon/  The shipped binary, which runs the various components of Livvi
-               (provider, agent loop from livvi-core, etc)
+livvi-core/        The core logic & interfaces crate
+livvi-core-macros/ Proc-macro helpers for livvi-core (e.g. ToolSchema derive)
+livvi-discord/     The Discord transport implementation
+livvi-openai/      The OpenAI LLM provider implementation
+livvi-daemon/      The shipped binary, which runs the various components of Livvi
+                   (provider, agent loop from livvi-core, etc)
 ```
 
 ## Locked technical decisions

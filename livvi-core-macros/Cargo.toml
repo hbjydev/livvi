@@ -1,0 +1,18 @@
+[package]
+name = "livvi-core-macros"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+exclude.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+heck = "0.5"
+proc-macro-crate = "3"

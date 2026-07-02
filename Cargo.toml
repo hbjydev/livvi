@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["livvi-core", "livvi-daemon", "livvi-discord", "livvi-openai"]
+members = ["livvi-core", "livvi-core-macros", "livvi-daemon", "livvi-discord", "livvi-openai"]
 
 [workspace.package]
 edition = "2024"
