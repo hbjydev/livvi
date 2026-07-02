@@ -29,6 +29,10 @@ pub struct ProviderResponse {
 }
 
 #[async_trait]
-pub trait Provider: Send + Sync + 'static {
-    async fn complete(&mut self, transcript: Transcript, tools: Tools) -> Result<ProviderResponse>;
+pub trait Provider<S: Send + Sync + 'static>: Send + Sync + 'static {
+    async fn complete(
+        &mut self,
+        transcript: Transcript,
+        tools: Tools<S>,
+    ) -> Result<ProviderResponse>;
 }

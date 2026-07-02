@@ -33,8 +33,12 @@ impl OpenAIProvider {
 }
 
 #[async_trait]
-impl Provider for OpenAIProvider {
-    async fn complete(&mut self, transcript: Transcript, tools: Tools) -> Result<ProviderResponse> {
+impl<S: Send + Sync + 'static> Provider<S> for OpenAIProvider {
+    async fn complete(
+        &mut self,
+        transcript: Transcript,
+        tools: Tools<S>,
+    ) -> Result<ProviderResponse> {
         let mut input_items = vec![];
         for item in transcript.items() {
             input_items.extend(into_openai(item)?);

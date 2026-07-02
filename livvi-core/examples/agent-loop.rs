@@ -1,37 +1,28 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use livvi_core::agent::Agent;
 use livvi_core::provider::{
     MockProvider, ProviderResponse, ProviderResponseToolCall, ProviderResponseValue,
 };
-use livvi_core::tool::{Tool, ToolSchema, Tools};
-use serde_json::Value;
+use livvi_core::tool::{Input, Tools, tool};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-#[derive(ToolSchema)]
-#[tool {
-    name = "calc",
-    input = CalcToolInput,
-}]
-/// A simple calculator tool
-pub struct CalcTool;
-
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct CalcToolInput {
-    pub a: i32,
-    pub b: i32,
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct CalcInput {
+    a: i32,
+    b: i32,
 }
 
-#[async_trait]
-impl Tool for CalcTool {
-    async fn call(&self, _args: Value) -> Result<String> {
-        Ok("4".to_string())
-    }
+/// A simple calculator tool.
+#[tool]
+async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
+    a + b
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut tools = Tools::new();
-    tools.add_tool(CalcTool);
+    tools.add_tool(calc);
 
     let provider = MockProvider::new(vec![
         ProviderResponse {
@@ -52,7 +43,7 @@ async fn main() -> Result<()> {
         },
     ]);
 
-    let mut agent = Agent::new(provider, tools);
+    let mut agent = Agent::new(provider, tools, ());
 
     let result = agent.run("Hello, world!").await?;
 

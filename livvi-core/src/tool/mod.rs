@@ -1,194 +1,251 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-pub use livvi_core_macros::ToolSchema;
+use crate::model;
+
+pub use livvi_core_macros::tool;
+
+/// Errors that can occur while extracting values from a tool call context.
+#[derive(Debug)]
+pub enum ToolExtractError {
+    /// The provided arguments failed JSON Schema validation.
+    InvalidArguments(String),
+
+    /// The provided arguments validated but could not be deserialized into the input type.
+    Deserialization(serde_json::Error),
+
+    /// The generated schema was invalid and could not be used for validation.
+    Schema(anyhow::Error),
+}
+
+impl std::fmt::Display for ToolExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolExtractError::InvalidArguments(e) => write!(f, "invalid arguments: {e}"),
+            ToolExtractError::Deserialization(e) => {
+                write!(f, "failed to deserialize arguments: {e}")
+            }
+            ToolExtractError::Schema(e) => write!(f, "invalid schema: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ToolExtractError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ToolExtractError::InvalidArguments(_) => None,
+            ToolExtractError::Deserialization(e) => Some(e),
+            ToolExtractError::Schema(e) => e.source(),
+        }
+    }
+}
+
+impl From<serde_json::Error> for ToolExtractError {
+    fn from(value: serde_json::Error) -> Self {
+        ToolExtractError::Deserialization(value)
+    }
+}
+
+impl From<anyhow::Error> for ToolExtractError {
+    fn from(value: anyhow::Error) -> Self {
+        ToolExtractError::Schema(value)
+    }
+}
+
+/// Context passed to tools when they are invoked by the agent loop.
+///
+/// This is a catch-all container for "things the agent loop needs to give to the tool that
+/// aren't its arguments". It is parameterised by the application state type `S`, which is
+/// provided by the user when the agent is constructed.
+pub struct ToolContext<'a, S> {
+    /// The current conversation transcript.
+    pub transcript: &'a model::Transcript,
+
+    /// The provider-supplied ID for this tool call.
+    pub tool_call_id: &'a str,
+
+    /// The user-provided application state.
+    pub state: &'a S,
+}
+
+/// Extracts a value from a [`ToolContext`] and the raw JSON tool arguments.
+///
+/// Implemented by extractor types such as [`Input`], [`State`], [`Transcript`], and [`ToolCallId`].
+/// Users can also implement this trait for their own extractor types.
+pub trait FromToolContext<'a, S>: Sized {
+    /// Extract the value from the given context and arguments.
+    fn from_tool_context(
+        ctx: &'a ToolContext<'a, S>,
+        args: &'a Value,
+    ) -> Result<Self, ToolExtractError>;
+}
+
+/// Extracts the tool input from the raw JSON arguments.
+///
+/// Exactly one `Input<T>` extractor is allowed per tool. `T` must implement [`serde::Deserialize`]
+/// and [`schemars::JsonSchema`]; the latter is used to derive the tool's JSON Schema input.
+pub struct Input<T>(pub T);
+
+impl<'a, S, T> FromToolContext<'a, S> for Input<T>
+where
+    T: serde::de::DeserializeOwned + schemars::JsonSchema,
+{
+    fn from_tool_context(
+        _ctx: &'a ToolContext<'a, S>,
+        args: &'a Value,
+    ) -> Result<Self, ToolExtractError> {
+        let schema = schemars::schema_for!(T);
+        let validator = jsonschema::validator_for(schema.as_value())
+            .map_err(|e| ToolExtractError::Schema(anyhow::anyhow!(e)))?;
+        validator
+            .validate(args)
+            .map_err(|e| ToolExtractError::InvalidArguments(e.to_string()))?;
+        let value = serde_json::from_value(args.clone())?;
+        Ok(Input(value))
+    }
+}
+
+/// Extracts a reference to a piece of the application state.
+///
+/// `T` is the target type, extracted from the context's state via [`AsRef`]. The function
+/// parameter looks like `State(state): State<AppState>` where the agent's state is, for example,
+/// `Arc<AppState>`.
+pub struct State<'a, T>(pub &'a T);
+
+impl<'a, S, T> FromToolContext<'a, S> for State<'a, T>
+where
+    S: AsRef<T>,
+{
+    fn from_tool_context(
+        ctx: &'a ToolContext<'a, S>,
+        _args: &'a Value,
+    ) -> Result<Self, ToolExtractError> {
+        Ok(State(ctx.state.as_ref()))
+    }
+}
+
+/// Extracts a reference to the current conversation transcript.
+pub struct Transcript<'a>(pub &'a model::Transcript);
+
+impl<'a, S> FromToolContext<'a, S> for Transcript<'a> {
+    fn from_tool_context(
+        ctx: &'a ToolContext<'a, S>,
+        _args: &'a Value,
+    ) -> Result<Self, ToolExtractError> {
+        Ok(Transcript(ctx.transcript))
+    }
+}
+
+/// Extracts the provider-supplied tool call ID.
+pub struct ToolCallId<'a>(pub &'a str);
+
+impl<'a, S> FromToolContext<'a, S> for ToolCallId<'a> {
+    fn from_tool_context(
+        ctx: &'a ToolContext<'a, S>,
+        _args: &'a Value,
+    ) -> Result<Self, ToolExtractError> {
+        Ok(ToolCallId(ctx.tool_call_id))
+    }
+}
+
+/// The output of a tool call before it is turned into a [`model::ToolResult`].
+#[derive(Debug, Clone)]
+pub enum ToolCallOutput {
+    /// The tool call succeeded. The string is the serialized form of the return value.
+    Success(String),
+    /// The tool call failed. The string is the serialized form of the error.
+    Error(String),
+}
+
+impl ToolCallOutput {
+    /// Attach a tool call ID to this output to produce a full [`model::ToolResult`].
+    pub fn into_tool_result(self, id: impl Into<String>) -> model::ToolResult {
+        let id = id.into();
+        match self {
+            ToolCallOutput::Success(content) => model::ToolResult {
+                id,
+                content,
+                is_error: false,
+            },
+            ToolCallOutput::Error(content) => model::ToolResult {
+                id,
+                content,
+                is_error: true,
+            },
+        }
+    }
+}
 
 /// A concrete description of a tool that can be passed to a provider.
+#[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: schemars::Schema,
 }
 
-/// Static schema metadata for a tool. This is normally implemented via the
-/// `ToolSchema` derive macro.
+/// Implemented by the generated wrapper for a `#[tool]` function.
 ///
-/// The methods take `&self` so that the trait remains dyn-compatible; `Tool`
-/// requires `ToolSchema` and is used as `dyn Tool` by the `Tools` registry.
-pub trait ToolSchema {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn input_schema(&self) -> schemars::Schema;
-}
-
+/// This trait is object-safe and is used by [`Tools`] to store heterogeneous tools.
 #[async_trait]
-pub trait Tool: Send + Sync + ToolSchema {
-    fn schema(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: self.description().to_string(),
-            input_schema: self.input_schema(),
-        }
-    }
+pub trait ToolHandler<S: Send + Sync + 'static>: Send + Sync + 'static {
+    /// The static schema for this tool.
+    fn schema(&self) -> ToolDefinition;
 
-    fn validate_input(&self, args: &Value) -> Result<()> {
-        let validator = jsonschema::validator_for(self.schema().input_schema.as_value())?;
-
-        if !validator.is_valid(args) {
-            anyhow::bail!(
-                "Invalid arguments for tool {}: {:?}",
-                self.schema().name,
-                args
-            )
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn call(&self, args: Value) -> Result<String>;
+    /// Invoke the tool with the given context and arguments.
+    async fn call(&self, ctx: &ToolContext<'_, S>, args: Value) -> ToolCallOutput;
 }
 
-#[derive(Clone, Default)]
-pub struct Tools(HashMap<String, Arc<dyn Tool>>);
+/// A registry of tools, parameterised by the application state type.
+pub struct Tools<S: Send + Sync + 'static> {
+    tools: HashMap<String, Arc<dyn ToolHandler<S>>>,
+}
 
-impl Tools {
+impl<S: Send + Sync + 'static> Clone for Tools<S> {
+    fn clone(&self) -> Self {
+        Tools {
+            tools: self.tools.clone(),
+        }
+    }
+}
+
+impl<S: Send + Sync + 'static> Tools<S> {
+    /// Create an empty tool registry.
     pub fn new() -> Self {
-        Tools(HashMap::new())
+        Tools {
+            tools: HashMap::new(),
+        }
     }
 
+    /// The schemas of all registered tools, suitable for passing to a provider.
     pub fn schemas(&self) -> Vec<ToolDefinition> {
-        self.0.values().map(|tool| tool.schema()).collect()
+        self.tools.values().map(|tool| tool.schema()).collect()
     }
 
-    pub fn add_tool(&mut self, tool: impl Tool + 'static) {
-        self.0.insert(tool.schema().name, Arc::new(tool));
+    /// Add a tool to the registry.
+    ///
+    /// The tool is typically a `#[tool]` function; the macro generates a wrapper struct that
+    /// implements [`ToolHandler`].
+    pub fn add_tool(&mut self, tool: impl ToolHandler<S> + 'static) {
+        let schema = tool.schema();
+        self.tools.insert(schema.name, Arc::new(tool));
     }
 
+    /// Returns whether a tool with the given name is registered.
     pub fn has_tool(&self, tool_name: &str) -> bool {
-        self.0.iter().any(|tool| tool.0 == tool_name)
+        self.tools.contains_key(tool_name)
     }
 
-    pub fn get_tool(&self, tool_name: &str) -> Option<&dyn Tool> {
-        self.0
-            .iter()
-            .into_iter()
-            .find(|tool| tool.0 == tool_name)
-            .map(|t| t.1.as_ref())
+    /// Returns the tool with the given name, if any.
+    pub fn get_tool(&self, tool_name: &str) -> Option<&dyn ToolHandler<S>> {
+        self.tools.get(tool_name).map(|tool| tool.as_ref())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
-    use async_trait::async_trait;
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
-
-    use crate::tool::{Tool, ToolSchema};
-
-    #[derive(Debug, Clone, ToolSchema)]
-    #[tool { input = TestToolInput }]
-    /// A test tool
-    pub struct TestTool;
-
-    #[derive(Serialize, Deserialize, JsonSchema)]
-    pub struct TestToolInput;
-
-    #[async_trait]
-    impl Tool for TestTool {
-        async fn call(&self, _args: Value) -> Result<String> {
-            Ok("test_result".to_string())
-        }
-    }
-
-    #[test]
-    pub fn test_add_tool() {
-        let mut tools = super::Tools::new();
-        let tool = TestTool {};
-        tools.add_tool(tool.clone());
-        assert!(tools.has_tool("test_tool"));
-        assert_eq!(
-            tools.get_tool("test_tool").unwrap().schema().name,
-            tool.schema().name
-        );
-    }
-
-    #[test]
-    pub fn test_has_tool() {
-        let mut tools = super::Tools::new();
-        let tool = TestTool {};
-        tools.add_tool(tool);
-        assert!(tools.has_tool("test_tool"));
-        assert!(!tools.has_tool("non_existent_tool"));
-    }
-
-    #[test]
-    pub fn test_get_tool() {
-        let mut tools = super::Tools::new();
-        let tool = TestTool {};
-        tools.add_tool(tool.clone());
-        assert_eq!(
-            tools.get_tool("test_tool").unwrap().schema().name,
-            tool.schema().name
-        );
-        assert!(tools.get_tool("non_existent_tool").is_none());
-    }
-
-    #[test]
-    pub fn test_derive_name() {
-        assert_eq!((TestTool {}).name(), "test_tool");
-    }
-
-    #[test]
-    pub fn test_derive_description() {
-        assert_eq!((TestTool {}).description(), "A test tool");
-    }
-
-    #[test]
-    pub fn test_derive_input_schema() {
-        let schema = (TestTool {}).input_schema();
-        let value = schema.as_value();
-        assert_eq!(value.get("type").and_then(|v| v.as_str()), Some("null"));
-    }
-
-    #[test]
-    pub fn test_definition_from_schema() {
-        let tool = TestTool {};
-        let definition = tool.schema();
-        assert_eq!(definition.name, "test_tool");
-        assert_eq!(definition.description, "A test tool");
-    }
-
-    #[derive(Debug, Clone, ToolSchema)]
-    #[tool {
-        name = "overridden",
-        input = OverriddenToolInput,
-        description = "explicit description",
-    }]
-    /// ignored doc comment
-    pub struct OverriddenTool;
-
-    #[derive(Serialize, Deserialize, JsonSchema)]
-    pub struct OverriddenToolInput;
-
-    #[async_trait]
-    impl Tool for OverriddenTool {
-        async fn call(&self, _args: Value) -> Result<String> {
-            Ok("overridden".to_string())
-        }
-    }
-
-    #[test]
-    pub fn test_overridden_name() {
-        assert_eq!((OverriddenTool {}).name(), "overridden");
-    }
-
-    #[test]
-    pub fn test_overridden_description() {
-        assert_eq!((OverriddenTool {}).description(), "explicit description");
+impl<S: Send + Sync + 'static> Default for Tools<S> {
+    fn default() -> Self {
+        Tools::new()
     }
 }

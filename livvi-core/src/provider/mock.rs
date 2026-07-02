@@ -23,11 +23,11 @@ impl MockProvider {
 }
 
 #[async_trait]
-impl Provider for MockProvider {
+impl<S: Send + Sync + 'static> Provider<S> for MockProvider {
     async fn complete(
         &mut self,
         _transcript: Transcript,
-        _tools: Tools,
+        _tools: Tools<S>,
     ) -> Result<ProviderResponse> {
         if self.index >= self.responses.len() {
             anyhow::bail!("Mock ran out of responses");
@@ -71,7 +71,7 @@ mod tests {
 
         // Test that it returns the expected responses in order
         let transcript = Transcript::new();
-        let tools = Tools::new();
+        let tools = Tools::<()>::new();
         let response1 = provider
             .complete(transcript.clone(), tools.clone())
             .await

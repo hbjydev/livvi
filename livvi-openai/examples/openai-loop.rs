@@ -1,35 +1,26 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use livvi_core::agent::Agent;
-use livvi_core::tool::{Tool, ToolSchema, Tools};
+use livvi_core::tool::{Input, Tools, tool};
 use livvi_openai::OpenAIProvider;
-use serde_json::Value;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-#[derive(ToolSchema)]
-#[tool {
-    name = "calc",
-    input = CalcToolInput,
-}]
-/// A simple calculator tool that can perform addition
-pub struct CalcTool;
-
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct CalcToolInput {
-    pub a: i32,
-    pub b: i32,
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct CalcInput {
+    a: i32,
+    b: i32,
 }
 
-#[async_trait]
-impl Tool for CalcTool {
-    async fn call(&self, _args: Value) -> Result<String> {
-        Ok("4".to_string())
-    }
+/// A simple calculator tool that can perform addition.
+#[tool]
+async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
+    a + b
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut tools = Tools::new();
-    tools.add_tool(CalcTool);
+    tools.add_tool(calc);
 
     let api_key =
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
@@ -40,7 +31,7 @@ async fn main() -> Result<()> {
     let provider = OpenAIProvider::new(&api_key, &api_url, &model_name)
         .expect("Failed to create OpenAI provider");
 
-    let mut agent = Agent::new(provider, tools);
+    let mut agent = Agent::new(provider, tools, ());
 
     let result = agent
         .run("Hello there, what's 2+2? Use the calc tool")

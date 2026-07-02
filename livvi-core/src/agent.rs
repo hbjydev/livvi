@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::{
     model::{ToolCall, ToolResult, Transcript, TranscriptItem},
     provider::{Provider, ProviderResponseToolCall, ProviderResponseValue},
-    tool::Tools,
+    tool::{ToolCallOutput, ToolContext, Tools},
 };
 
 pub const MAX_ITERATIONS: usize = 10;
@@ -13,15 +13,28 @@ pub const AGENT_INSTRUCTIONS: &str = include_str!("../prompts/instructions.md");
 /// An Agent is responsible for managing the interaction between a user, a
 /// provider, and a set of tools. It maintains a transcript of the conversation
 /// and handles tool calls as requested by the provider.
-pub struct Agent<P: Provider> {
+pub struct Agent<P, S>
+where
+    P: Provider<S>,
+    S: Send + Sync + 'static,
+{
     provider: P,
-    tools: Tools,
+    tools: Tools<S>,
+    state: S,
 }
 
-impl<P: Provider> Agent<P> {
-    /// Creates a new Agent with the given provider and tools.
-    pub fn new(provider: P, tools: Tools) -> Self {
-        Agent { provider, tools }
+impl<P, S> Agent<P, S>
+where
+    P: Provider<S>,
+    S: Send + Sync + 'static,
+{
+    /// Creates a new Agent with the given provider, tools, and application state.
+    pub fn new(provider: P, tools: Tools<S>, state: S) -> Self {
+        Agent {
+            provider,
+            tools,
+            state,
+        }
     }
 
     /// Returns the system prompt for the agent. This can be overridden to
@@ -74,7 +87,7 @@ impl<P: Provider> Agent<P> {
                     {
                         if tool_name.is_empty() {
                             transcript.add_item(TranscriptItem::tool_result(ToolResult {
-                                id: tool_call_id.clone(),
+                                id: tool_call_id,
                                 content: "Tool name is empty".into(),
                                 is_error: true,
                             }));
@@ -93,37 +106,23 @@ impl<P: Provider> Agent<P> {
                         }
                         let tool = tool.unwrap();
 
-                        if let Err(e) = tool.validate_input(&tool_args) {
-                            transcript.add_item(TranscriptItem::tool_result(ToolResult {
-                                id: tool_call_id.clone(),
-                                content: e.to_string(),
-                                is_error: true,
-                            }));
-                            continue;
-                        }
-
                         transcript.add_item(TranscriptItem::assistant_tool_call(ToolCall {
                             name: tool_name.clone(),
                             id: tool_call_id.clone(),
                             input: tool_args.clone(),
                         }));
 
-                        match tool.call(tool_args.clone()).await {
-                            Ok(result) => {
-                                transcript.add_item(TranscriptItem::tool_result(ToolResult {
-                                    id: tool_call_id.clone(),
-                                    content: result.clone(),
-                                    is_error: false,
-                                }));
-                            }
-                            Err(e) => {
-                                transcript.add_item(TranscriptItem::tool_result(ToolResult {
-                                    id: tool_call_id.clone(),
-                                    content: format!("Tool call failed: {:?}", e),
-                                    is_error: true,
-                                }));
-                            }
-                        }
+                        let ctx = ToolContext {
+                            transcript: &transcript,
+                            tool_call_id: &tool_call_id,
+                            state: &self.state,
+                        };
+
+                        let output: ToolCallOutput = tool.call(&ctx, tool_args).await;
+
+                        transcript.add_item(TranscriptItem::tool_result(
+                            output.into_tool_result(tool_call_id),
+                        ));
                     }
                 }
             };
@@ -137,11 +136,10 @@ impl<P: Provider> Agent<P> {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use async_trait::async_trait;
+    use std::sync::Arc;
+
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-    use serde_json::Value;
 
     use crate::{
         agent::Agent,
@@ -149,36 +147,29 @@ mod tests {
         provider::{
             MockProvider, ProviderResponse, ProviderResponseToolCall, ProviderResponseValue,
         },
-        tool::{Tool, ToolSchema, Tools},
+        tool::{Input, Tools, tool},
     };
 
-    #[derive(ToolSchema)]
-    #[tool {
-        name = "calc",
-        input = CalcToolInput,
-    }]
-    /// A simple calculator tool
-    pub struct CalcTool;
+    #[derive(Debug, Clone, Default)]
+    struct AppState;
 
     #[derive(Serialize, Deserialize, JsonSchema)]
-    pub struct CalcToolInput {
-        pub a: i32,
-        pub b: i32,
+    struct CalcInput {
+        a: i32,
+        b: i32,
     }
 
-    #[async_trait]
-    impl Tool for CalcTool {
-        async fn call(&self, args: Value) -> Result<String> {
-            let input: CalcToolInput = serde_json::from_value(args)?;
-            Ok((input.a + input.b).to_string())
-        }
+    /// A simple calculator tool.
+    #[tool]
+    async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
+        a + b
     }
 
-    fn setup_agent(responses: Vec<ProviderResponse>) -> Agent<MockProvider> {
+    fn setup_agent(responses: Vec<ProviderResponse>) -> Agent<MockProvider, Arc<AppState>> {
         let mut tools = Tools::new();
-        tools.add_tool(CalcTool);
+        tools.add_tool(calc);
         let provider = MockProvider::new(responses);
-        Agent::new(provider, tools)
+        Agent::new(provider, tools, Arc::new(AppState))
     }
 
     #[tokio::test]
@@ -337,25 +328,26 @@ mod tests {
         assert!(result.is_ok());
 
         let result = result.unwrap();
-        assert_eq!(
-            result
-                .items()
-                .iter()
-                .find(|&ti| ti.role == Role::User
+        let tool_result = result
+            .items()
+            .iter()
+            .find(|&ti| {
+                ti.role == Role::User
                     && ti
                         .blocks
                         .iter()
-                        .any(|f| matches!(f, TranscriptContent::ToolResult(..))))
-                .unwrap()
-                .blocks
-                .iter()
-                .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
-                .unwrap(),
-            &TranscriptContent::ToolResult(ToolResult {
-                id: "call-1".to_string(),
-                content: format!("Invalid arguments for tool calc: {:?}", args).to_string(),
-                is_error: true,
-            }),
-        );
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
+            })
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
+            .unwrap()
+            .clone();
+
+        assert!(matches!(
+            tool_result,
+            TranscriptContent::ToolResult(ToolResult { is_error: true, .. })
+        ));
     }
 }

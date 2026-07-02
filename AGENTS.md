@@ -20,7 +20,7 @@ use it as a check for how the code is meant to work necessarily.
 
 ```
 livvi-core/        The core logic & interfaces crate
-livvi-core-macros/ Proc-macro helpers for livvi-core (e.g. ToolSchema derive)
+livvi-core-macros/ Proc-macro helpers for livvi-core (e.g. the #[tool] attribute macro)
 livvi-discord/     The Discord transport implementation
 livvi-openai/      The OpenAI LLM provider implementation
 livvi-daemon/      The shipped binary, which runs the various components of Livvi
@@ -29,10 +29,10 @@ livvi-daemon/      The shipped binary, which runs the various components of Livv
 
 ## Locked technical decisions
 
-| Concern   | Choice                                                               |
-| --------- | -------------------------------------------------------------------- |
-| Tools     | Implemented as traits, to allow ease of implementation & maintenance |
-| Providers | Implemented as traits, to allow ease of implementation & maintenance |
+| Concern   | Choice                                                                                               |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| Tools     | Implemented as async functions with a `#[tool]` attribute macro and Axum-style extractors (`Input<T>`, `State<T>`, etc) |
+| Providers | Implemented as traits, to allow ease of implementation & maintenance                                   |
 
 
 ## Build/test/verify
