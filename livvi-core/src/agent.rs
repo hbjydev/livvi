@@ -20,10 +20,7 @@ pub struct Agent<P: Provider> {
 
 impl<P: Provider> Agent<P> {
     /// Creates a new Agent with the given provider and tools.
-    pub fn new(
-        provider: P,
-        tools: Tools,
-    ) -> Self {
+    pub fn new(provider: P, tools: Tools) -> Self {
         Agent { provider, tools }
     }
 
@@ -38,7 +35,9 @@ impl<P: Provider> Agent<P> {
     /// interaction is returned.
     pub async fn run(&mut self, user_msg: impl Into<String>) -> Result<Transcript> {
         let mut transcript = Transcript::new();
-        transcript.add_item(crate::model::TranscriptItem::system_message(self.system_prompt()));
+        transcript.add_item(crate::model::TranscriptItem::system_message(
+            self.system_prompt(),
+        ));
         transcript.add_item(crate::model::TranscriptItem::user_message(user_msg));
 
         while transcript.items().len() < MAX_ITERATIONS {
@@ -79,9 +78,7 @@ impl<P: Provider> Agent<P> {
                             continue;
                         }
 
-                        let tool = self
-                            .tools
-                            .get_tool(&tool_name);
+                        let tool = self.tools.get_tool(&tool_name);
 
                         if tool.is_none() {
                             transcript.add_item(TranscriptItem::tool_result(ToolResult {
@@ -144,9 +141,12 @@ mod tests {
     use serde_json::Value;
 
     use crate::{
-        agent::Agent, model::{Role, ToolResult, TranscriptContent}, provider::{
+        agent::Agent,
+        model::{Role, ToolResult, TranscriptContent},
+        provider::{
             MockProvider, ProviderResponse, ProviderResponseToolCall, ProviderResponseValue,
-        }, tool::{Tool, ToolSchema, Tools},
+        },
+        tool::{Tool, ToolSchema, Tools},
     };
 
     pub struct CalcTool;
@@ -242,19 +242,16 @@ mod tests {
             result
                 .items()
                 .iter()
-                .find(|&ti|
-                    ti.role == Role::User
+                .find(|&ti| ti.role == Role::User
                     && ti
                         .blocks
                         .iter()
-                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
-                )
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..))))
                 .unwrap()
                 .blocks
                 .iter()
                 .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
                 .unwrap(),
-
             &TranscriptContent::ToolResult(ToolResult {
                 id: "call-1".to_string(),
                 content: "Tool name is empty".to_string(),
@@ -293,19 +290,16 @@ mod tests {
             result
                 .items()
                 .iter()
-                .find(|&ti|
-                    ti.role == Role::User
+                .find(|&ti| ti.role == Role::User
                     && ti
                         .blocks
                         .iter()
-                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
-                )
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..))))
                 .unwrap()
                 .blocks
                 .iter()
                 .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
                 .unwrap(),
-
             &TranscriptContent::ToolResult(ToolResult {
                 id: "call-1".to_string(),
                 content: "Tool does not exist: \"missing-tool\"".to_string(),
@@ -346,19 +340,16 @@ mod tests {
             result
                 .items()
                 .iter()
-                .find(|&ti|
-                    ti.role == Role::User
+                .find(|&ti| ti.role == Role::User
                     && ti
                         .blocks
                         .iter()
-                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
-                )
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..))))
                 .unwrap()
                 .blocks
                 .iter()
                 .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
                 .unwrap(),
-
             &TranscriptContent::ToolResult(ToolResult {
                 id: "call-1".to_string(),
                 content: format!("Invalid arguments for tool calc: {:?}", args).to_string(),
