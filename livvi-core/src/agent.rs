@@ -8,6 +8,8 @@ use crate::{
 
 pub const MAX_ITERATIONS: usize = 10;
 
+pub const AGENT_INSTRUCTIONS: &'static str = include_str!("../prompts/instructions.md");
+
 /// An Agent is responsible for managing the interaction between a user, a
 /// provider, and a set of tools. It maintains a transcript of the conversation
 /// and handles tool calls as requested by the provider.
@@ -28,7 +30,7 @@ impl<P: Provider> Agent<P> {
     /// Returns the system prompt for the agent. This can be overridden to
     /// provide a custom system prompt.
     fn system_prompt(&self) -> String {
-        return "".into();
+        return format!("{}\n\n{}", "# SOUL.md", AGENT_INSTRUCTIONS);
     }
 
     /// Runs the agent with the given user message. The agent will interact with
