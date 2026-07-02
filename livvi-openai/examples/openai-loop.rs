@@ -25,10 +25,10 @@ async fn main() -> Result<()> {
     tools.add_tool(calc);
 
     let api_key =
-        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+        std::env::var("LIVVI_OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
     let api_url =
-        std::env::var("OPENAI_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let model_name = std::env::var("OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4".to_string());
+        std::env::var("LIVVI_OPENAI_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let model_name = std::env::var("LIVVI_OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4".to_string());
 
     let provider = OpenAIChatCompletionsProvider::new(&api_key, &api_url, &model_name)
         .expect("Failed to create OpenAI provider");
