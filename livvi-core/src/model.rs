@@ -2,8 +2,6 @@ use std::{fmt::Display, time::Instant};
 
 use serde_json::{Value, json};
 
-use crate::provider::ProviderResponse;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -99,45 +97,6 @@ impl TranscriptItem {
             role: Role::System,
             blocks: vec![TranscriptContent::Text(content.into())],
             created_at: Instant::now(),
-        }
-    }
-}
-
-impl From<ProviderResponse> for TranscriptItem {
-    fn from(response: ProviderResponse) -> Self {
-        match response.value {
-            crate::provider::ProviderResponseValue::ToolCalls(calls) => {
-                let mut item = TranscriptItem {
-                    role: Role::Assistant,
-                    created_at: Instant::now(),
-                    blocks: vec![],
-                };
-
-                for call in calls {
-                    item.blocks.push(TranscriptContent::ToolCall(ToolCall {
-                        name: call.tool_name,
-                        id: call.tool_call_id,
-                        input: call.tool_args,
-                    }));
-                }
-
-                item
-            }
-            crate::provider::ProviderResponseValue::Text(text) => {
-                TranscriptItem::assistant_message(text)
-            }
-            crate::provider::ProviderResponseValue::Reasoning(reasoning) => TranscriptItem {
-                role: Role::Assistant,
-                blocks: vec![TranscriptContent::Reasoning {
-                    metadata: serde_json::json!({
-                        "input_tokens": response.input_tokens,
-                        "output_tokens": response.output_tokens,
-                        "reasoning_tokens": response.reasoning_tokens
-                    }),
-                    text: reasoning,
-                }],
-                created_at: Instant::now(),
-            },
         }
     }
 }

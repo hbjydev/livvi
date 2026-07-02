@@ -1,8 +1,6 @@
 use anyhow::Result;
 use livvi_core::agent::Agent;
-use livvi_core::provider::{
-    MockProvider, ProviderResponse, ProviderResponseToolCall, ProviderResponseValue,
-};
+use livvi_core::provider::{FinishReason, MockProvider, ProviderEvent};
 use livvi_core::tool::{Input, Tools, tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,22 +23,28 @@ async fn main() -> Result<()> {
     tools.add_tool(calc);
 
     let provider = MockProvider::new(vec![
-        ProviderResponse {
-            value: ProviderResponseValue::ToolCalls(vec![ProviderResponseToolCall {
-                tool_name: "calc".to_string(),
-                tool_args: serde_json::json!({"a": 2, "b": 2}),
-                tool_call_id: "call-1".to_string(),
-            }]),
-            input_tokens: 0,
-            output_tokens: 0,
-            reasoning_tokens: 0,
-        },
-        ProviderResponse {
-            value: ProviderResponseValue::Text("2 + 2 is 4.".to_string()),
-            input_tokens: 0,
-            output_tokens: 0,
-            reasoning_tokens: 0,
-        },
+        vec![
+            ProviderEvent::ToolCallStart {
+                id: "call-1".to_string(),
+                name: "calc".to_string(),
+            },
+            ProviderEvent::ToolCallDelta {
+                id: "call-1".to_string(),
+                arguments: "{\"a\":2,\"b\":2}".to_string(),
+            },
+            ProviderEvent::ToolCallDone {
+                id: "call-1".to_string(),
+            },
+            ProviderEvent::Done {
+                reason: FinishReason::ToolCalls,
+            },
+        ],
+        vec![
+            ProviderEvent::TextDelta("2 + 2 is 4.".to_string()),
+            ProviderEvent::Done {
+                reason: FinishReason::EndTurn,
+            },
+        ],
     ]);
 
     let mut agent = Agent::new(provider, tools, ());

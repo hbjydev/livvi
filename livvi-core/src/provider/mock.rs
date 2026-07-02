@@ -1,91 +1,111 @@
+use std::collections::VecDeque;
+
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::{self};
 
 use crate::{
     model::Transcript,
-    provider::{Provider, ProviderResponse},
+    provider::{Provider, ProviderEvent, ProviderStream},
     tool::Tools,
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct MockProvider {
-    responses: Vec<ProviderResponse>,
-    index: usize,
+    turns: VecDeque<Vec<ProviderEvent>>,
 }
 
 impl MockProvider {
-    pub fn new(responses: Vec<ProviderResponse>) -> Self {
+    pub fn new(turns: Vec<Vec<ProviderEvent>>) -> Self {
         MockProvider {
-            responses,
-            index: 0,
+            turns: turns.into_iter().collect(),
         }
     }
 }
 
 #[async_trait]
 impl<S: Send + Sync + 'static> Provider<S> for MockProvider {
-    async fn complete(
+    async fn stream(
         &mut self,
         _transcript: Transcript,
         _tools: Tools<S>,
-    ) -> Result<ProviderResponse> {
-        if self.index >= self.responses.len() {
-            anyhow::bail!("Mock ran out of responses");
-        }
-
-        let response = self.responses[self.index].clone();
-        self.index += 1;
-
-        Ok(response)
+    ) -> Result<ProviderStream> {
+        let events = self.turns.pop_front().unwrap_or_default();
+        Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::provider::{ProviderResponseToolCall, ProviderResponseValue};
+    use futures::stream::StreamExt;
+
+    use crate::provider::FinishReason;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_mock_provider() {
-        use super::*;
-
-        let responses = vec![
-            ProviderResponse {
-                value: ProviderResponseValue::Text("Hello".to_string()),
-                input_tokens: 0,
-                output_tokens: 0,
-                reasoning_tokens: 0,
-            },
-            ProviderResponse {
-                value: ProviderResponseValue::ToolCalls(vec![ProviderResponseToolCall {
-                    tool_name: "tool1".to_string(),
-                    tool_args: serde_json::json!({"expr": "hello"}),
-                    tool_call_id: "id1".to_string(),
-                }]),
-                input_tokens: 0,
-                output_tokens: 0,
-                reasoning_tokens: 0,
-            },
+        let turns = vec![
+            vec![
+                ProviderEvent::TextDelta("Hello".to_string()),
+                ProviderEvent::Done {
+                    reason: FinishReason::EndTurn,
+                },
+            ],
+            vec![
+                ProviderEvent::ToolCallStart {
+                    id: "id1".to_string(),
+                    name: "tool1".to_string(),
+                },
+                ProviderEvent::ToolCallDelta {
+                    id: "id1".to_string(),
+                    arguments: "{\"expr\":\"hello\"}".to_string(),
+                },
+                ProviderEvent::ToolCallDone {
+                    id: "id1".to_string(),
+                },
+                ProviderEvent::Done {
+                    reason: FinishReason::ToolCalls,
+                },
+            ],
         ];
 
-        let mut provider = MockProvider::new(responses);
-
-        // Test that it returns the expected responses in order
+        let mut provider = MockProvider::new(turns);
         let transcript = Transcript::new();
         let tools = Tools::<()>::new();
-        let response1 = provider
-            .complete(transcript.clone(), tools.clone())
-            .await
-            .unwrap();
-        assert!(matches!(response1.value, ProviderResponseValue::Text(_)));
 
-        let response2 = provider.complete(transcript, tools.clone()).await.unwrap();
+        let response1: Vec<_> = provider
+            .stream(transcript.clone(), tools.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(response1.len(), 2);
         assert!(matches!(
-            response2.value,
-            ProviderResponseValue::ToolCalls(..)
+            response1[0].as_ref().unwrap(),
+            ProviderEvent::TextDelta(_)
         ));
 
-        // Test that it runs out of responses
-        let result = provider.complete(Transcript::new(), tools).await;
-        assert!(result.is_err());
+        let response2: Vec<_> = provider
+            .stream(transcript, tools.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(response2.len(), 4);
+        assert!(matches!(
+            response2.last().unwrap().as_ref().unwrap(),
+            ProviderEvent::Done {
+                reason: FinishReason::ToolCalls,
+            }
+        ));
+
+        let empty: Vec<_> = provider
+            .stream(Transcript::new(), tools)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(empty.is_empty());
     }
 }

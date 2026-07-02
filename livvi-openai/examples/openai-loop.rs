@@ -1,7 +1,7 @@
 use anyhow::Result;
 use livvi_core::agent::Agent;
 use livvi_core::tool::{Input, Tools, tool};
-use livvi_openai::OpenAIProvider;
+use livvi_openai::OpenAIChatCompletionsProvider;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,8 @@ async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let mut tools = Tools::new();
     tools.add_tool(calc);
 
@@ -28,7 +30,7 @@ async fn main() -> Result<()> {
         std::env::var("OPENAI_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model_name = std::env::var("OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4".to_string());
 
-    let provider = OpenAIProvider::new(&api_key, &api_url, &model_name)
+    let provider = OpenAIChatCompletionsProvider::new(&api_key, &api_url, &model_name)
         .expect("Failed to create OpenAI provider");
 
     let mut agent = Agent::new(provider, tools, ());
