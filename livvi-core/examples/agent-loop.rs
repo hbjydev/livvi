@@ -58,7 +58,9 @@ async fn main() -> Result<()> {
 
     let result = agent.run("Hello, world!").await?;
 
-    println!("{}", result);
+    for item in result.items().iter() {
+        println!("{:?}", item);
+    }
 
     Ok(())
 }

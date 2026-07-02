@@ -8,18 +8,35 @@ use crate::{
 
 pub const MAX_ITERATIONS: usize = 10;
 
+/// An Agent is responsible for managing the interaction between a user, a
+/// provider, and a set of tools. It maintains a transcript of the conversation
+/// and handles tool calls as requested by the provider.
 pub struct Agent<P: Provider> {
     provider: P,
     tools: Tools,
 }
 
 impl<P: Provider> Agent<P> {
-    pub fn new(provider: P, tools: Tools) -> Self {
+    /// Creates a new Agent with the given provider and tools.
+    pub fn new(
+        provider: P,
+        tools: Tools,
+    ) -> Self {
         Agent { provider, tools }
     }
 
-    pub async fn run(&mut self, user_msg: impl Into<String>) -> Result<String> {
+    /// Returns the system prompt for the agent. This can be overridden to
+    /// provide a custom system prompt.
+    fn system_prompt(&self) -> String {
+        return "".into();
+    }
+
+    /// Runs the agent with the given user message. The agent will interact with
+    /// the provider and tools to generate a response. The transcript of the
+    /// interaction is returned.
+    pub async fn run(&mut self, user_msg: impl Into<String>) -> Result<Transcript> {
         let mut transcript = Transcript::new();
+        transcript.add_item(crate::model::TranscriptItem::system_message(self.system_prompt()));
         transcript.add_item(crate::model::TranscriptItem::user_message(user_msg));
 
         while transcript.items().len() < MAX_ITERATIONS {
@@ -34,14 +51,14 @@ impl<P: Provider> Agent<P> {
                     transcript.add_item(crate::model::TranscriptItem::assistant_message(
                         text.clone(),
                     ));
-                    return Ok(text);
+                    return Ok(transcript);
                 }
 
                 ProviderResponseValue::Reasoning(text) => {
                     transcript.add_item(crate::model::TranscriptItem::assistant_reasoning(
                         text.clone(),
                     ));
-                    return Ok(text);
+                    continue;
                 }
 
                 ProviderResponseValue::ToolCalls(calls) => {
@@ -52,23 +69,35 @@ impl<P: Provider> Agent<P> {
                     } in calls
                     {
                         if tool_name.is_empty() {
-                            return Err(anyhow::anyhow!("Tool name is empty"));
+                            transcript.add_item(TranscriptItem::tool_result(ToolResult {
+                                id: tool_call_id.clone(),
+                                content: "Tool name is empty".into(),
+                                is_error: true,
+                            }));
+                            continue;
                         }
 
                         let tool = self
                             .tools
-                            .get_tool(&tool_name)
-                            .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
+                            .get_tool(&tool_name);
 
-                        let validator =
-                            jsonschema::validator_for(tool.schema().input_schema.as_value())?;
+                        if tool.is_none() {
+                            transcript.add_item(TranscriptItem::tool_result(ToolResult {
+                                id: tool_call_id.clone(),
+                                content: format!("Tool does not exist: {:?}", tool_name),
+                                is_error: true,
+                            }));
+                            continue;
+                        }
+                        let tool = tool.unwrap();
 
-                        if !validator.is_valid(&tool_args) {
-                            anyhow::bail!(
-                                "Invalid arguments for tool {}: {:?}",
-                                tool_name,
-                                tool_args
-                            );
+                        if let Err(e) = tool.validate_input(&tool_args) {
+                            transcript.add_item(TranscriptItem::tool_result(ToolResult {
+                                id: tool_call_id.clone(),
+                                content: e.to_string(),
+                                is_error: true,
+                            }));
+                            continue;
                         }
 
                         transcript.add_item(TranscriptItem::assistant_tool_call(ToolCall {
@@ -113,11 +142,9 @@ mod tests {
     use serde_json::Value;
 
     use crate::{
-        agent::Agent,
-        provider::{
+        agent::Agent, model::{Role, ToolResult, TranscriptContent}, provider::{
             MockProvider, ProviderResponse, ProviderResponseToolCall, ProviderResponseValue,
-        },
-        tool::{Tool, ToolSchema, Tools},
+        }, tool::{Tool, ToolSchema, Tools},
     };
 
     pub struct CalcTool;
@@ -175,7 +202,12 @@ mod tests {
         let result = agent.run("What's 2+2?").await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2 + 2 is 4.");
+
+        let result = result.unwrap();
+        assert_eq!(
+            result.items().last().unwrap().blocks.last().unwrap(),
+            &TranscriptContent::Text("2 + 2 is 4.".into()),
+        );
     }
 
     #[tokio::test]
@@ -201,8 +233,32 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Tool name is empty");
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert_eq!(
+            result
+                .items()
+                .iter()
+                .find(|&ti|
+                    ti.role == Role::User
+                    && ti
+                        .blocks
+                        .iter()
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
+                )
+                .unwrap()
+                .blocks
+                .iter()
+                .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
+                .unwrap(),
+
+            &TranscriptContent::ToolResult(ToolResult {
+                id: "call-1".to_string(),
+                content: "Tool name is empty".to_string(),
+                is_error: true,
+            }),
+        );
     }
 
     #[tokio::test]
@@ -228,20 +284,43 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert!(result.is_err());
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
         assert_eq!(
-            result.unwrap_err().to_string(),
-            "Tool not found: missing-tool"
+            result
+                .items()
+                .iter()
+                .find(|&ti|
+                    ti.role == Role::User
+                    && ti
+                        .blocks
+                        .iter()
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
+                )
+                .unwrap()
+                .blocks
+                .iter()
+                .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
+                .unwrap(),
+
+            &TranscriptContent::ToolResult(ToolResult {
+                id: "call-1".to_string(),
+                content: "Tool does not exist: \"missing-tool\"".to_string(),
+                is_error: true,
+            }),
         );
     }
 
     #[tokio::test]
     async fn test_agent_fails_on_invalid_tool_args() {
+        let args = serde_json::json!({"first": 2, "second": 2});
+
         let mut agent = setup_agent(vec![
             crate::provider::ProviderResponse {
                 value: ProviderResponseValue::ToolCalls(vec![ProviderResponseToolCall {
                     tool_name: "calc".to_string(),
-                    tool_args: serde_json::json!({"first": 2, "second": 2}),
+                    tool_args: args.clone(),
                     tool_call_id: "call-1".to_string(),
                 }]),
                 input_tokens: 0,
@@ -258,12 +337,31 @@ mod tests {
 
         let result = agent.run("What's 2+2?").await;
 
-        assert!(result.is_err());
-        assert!(
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert_eq!(
             result
-                .unwrap_err()
-                .to_string()
-                .starts_with("Invalid arguments for tool")
+                .items()
+                .iter()
+                .find(|&ti|
+                    ti.role == Role::User
+                    && ti
+                        .blocks
+                        .iter()
+                        .any(|f| matches!(f, TranscriptContent::ToolResult(..)))
+                )
+                .unwrap()
+                .blocks
+                .iter()
+                .find(|&tb| matches!(tb, TranscriptContent::ToolResult(..)))
+                .unwrap(),
+
+            &TranscriptContent::ToolResult(ToolResult {
+                id: "call-1".to_string(),
+                content: format!("Invalid arguments for tool calc: {:?}", args).to_string(),
+                is_error: true,
+            }),
         );
     }
 }

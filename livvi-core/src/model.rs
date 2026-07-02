@@ -11,21 +11,21 @@ pub enum Role {
     System,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
     pub name: String,
     pub id: String,
     pub input: serde_json::Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
     pub id: String,
     pub content: String,
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptContent {
     Text(String),
     ToolCall(ToolCall),
@@ -78,7 +78,7 @@ impl TranscriptItem {
 
     pub fn tool_result(tool_result: ToolResult) -> Self {
         TranscriptItem {
-            role: Role::Assistant,
+            role: Role::User,
             blocks: vec![TranscriptContent::ToolResult(tool_result)],
             created_at: Instant::now(),
         }

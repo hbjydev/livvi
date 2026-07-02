@@ -13,6 +13,21 @@ pub struct ToolSchema {
 #[async_trait]
 pub trait Tool {
     fn schema(&self) -> ToolSchema;
+    fn validate_input(&self, args: &Value) -> Result<()> {
+        let validator =
+            jsonschema::validator_for(self.schema().input_schema.as_value())?;
+
+        if !validator.is_valid(&args) {
+            anyhow::bail!(
+                "Invalid arguments for tool {}: {:?}",
+                self.schema().name,
+                args
+            )
+        } else {
+            Ok(())
+        }
+    }
+
     async fn call(&self, args: Value) -> Result<String>;
 }
 
