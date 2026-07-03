@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use livvi_core::{agent::Agent, interrupt::Interrupt, tool::Toolbox};
+use livvi_discord::DISCORD_INSTRUCTIONS;
 use livvi_discord::DiscordState;
 use livvi_discord::DiscordTransport;
 use livvi_discord::tools::discord_send;
@@ -61,18 +62,13 @@ async fn main() -> Result<()> {
             toolbox.add_tool(discord_send);
             toolbox
         })
+        .with_soul(DISCORD_INSTRUCTIONS.to_string())
         .with_input(interrupt_rx)
         .build()?;
 
     let agent_handle = tokio::spawn(async move {
         if let Err(e) = agent.run().await {
             tracing::error!("agent loop error: {e}");
-        }
-    });
-
-    let event_logger = tokio::spawn(async move {
-        while let Ok(event) = agent_events.recv().await {
-            tracing::debug!(?event, "agent event");
         }
     });
 
@@ -88,9 +84,6 @@ async fn main() -> Result<()> {
         }
         _ = agent_handle => {
             warn!("agent loop exited");
-        }
-        _ = event_logger => {
-            warn!("agent event logger exited");
         }
         _ = &mut discord_handle => {
             warn!("Discord transport exited");

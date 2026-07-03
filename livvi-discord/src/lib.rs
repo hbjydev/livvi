@@ -10,6 +10,8 @@ use serenity::all::{Client, Context, EventHandler, GatewayIntents, Message, Read
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+pub const DISCORD_INSTRUCTIONS: &str = include_str!("./instructions.md");
+
 struct Handler {
     interrupt_tx: mpsc::Sender<Interrupt>,
 }
@@ -27,9 +29,30 @@ impl EventHandler for Handler {
             "forwarding Discord message to agent loop"
         );
 
+        let display_name = msg
+            .member
+            .as_ref()
+            .and_then(|m| m.nick.clone())
+            .unwrap_or_else(|| msg.author.name.clone());
+
         if let Err(e) = self
             .interrupt_tx
-            .send(Interrupt::Message(msg.content))
+            .send(
+                Interrupt::Message(
+                    format!(
+                        r#"
+<external_event source="discord" author_id="{}" author_name="{}" channel_id="{}" guild_id="{}" message_id="{}" is_dm="{}">{}</external_event>
+                        "#,
+                        msg.author.id,
+                        display_name,
+                        msg.channel_id,
+                        msg.guild_id.unwrap_or_default(),
+                        msg.id,
+                        msg.guild_id.is_none(),
+                        msg.content,
+                    )
+                )
+            )
             .await
         {
             error!(error = %e, "failed to forward Discord message to agent loop");
