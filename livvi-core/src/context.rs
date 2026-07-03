@@ -9,6 +9,20 @@ pub struct Context {
     pub usage: Usage,
 }
 
+/// Wrap a direct assistant response so it is stored as scratchpad data in
+/// the conversation context.
+///
+/// If the content is empty, it is returned as-is so that we don't insert
+/// pointless empty tags into the context.
+pub(crate) fn wrap_scratchpad(content: impl Into<String>) -> String {
+    let content = content.into();
+    if content.is_empty() {
+        content
+    } else {
+        format!("<scratchpad>{}</scratchpad>", content)
+    }
+}
+
 impl Context {
     /// Create a new context with a given soul file. The soul file is stored as
     /// a system message in the context.
@@ -90,6 +104,12 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_wrap_scratchpad() {
+        assert_eq!(wrap_scratchpad("hello"), "<scratchpad>hello</scratchpad>");
+        assert_eq!(wrap_scratchpad(""), "");
+    }
 
     #[test]
     fn test_soul_injected_on_create() {

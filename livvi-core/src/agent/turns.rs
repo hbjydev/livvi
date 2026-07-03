@@ -3,8 +3,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::{
-    AgentEvent, agent::Agent, context::Context, interrupt::Interrupt, model::ToolCall,
-    provider::ProviderEvent, tool::ToolContext,
+    AgentEvent, agent::Agent, context::Context, context::wrap_scratchpad, interrupt::Interrupt,
+    model::ToolCall, provider::ProviderEvent, tool::ToolContext,
 };
 
 const TOK_STREAM_BUFFER_SIZE: usize = 256;
@@ -65,7 +65,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
                 context.push_assistant_tool_calls(
                     tool_calls.clone(),
-                    Some(iteration_response.as_str()),
+                    Some(wrap_scratchpad(&iteration_response)),
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking.as_str()),
                 );
 
@@ -124,7 +124,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
             let has_final_text = !iteration_response.is_empty();
             if has_final_text || !iteration_thinking.is_empty() {
                 context.push_assistant(
-                    &iteration_response,
+                    wrap_scratchpad(&iteration_response),
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking),
                 );
             }
