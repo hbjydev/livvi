@@ -1,7 +1,11 @@
 use anyhow::Result;
 // use livvi_core::agent::Agent;
 // use livvi_core::provider::{FinishReason, MockProvider, ProviderEvent};
-use livvi_core::{agent::Agent, provider::{MockProvider, ProviderEvent}, tool::{Input, Toolbox, tool}};
+use livvi_core::{
+    agent::Agent,
+    provider::{MockProvider, ProviderEvent},
+    tool::{Input, Toolbox, tool},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -43,11 +47,11 @@ async fn main() -> Result<()> {
         .with_toolbox(tools)
         .build()?;
 
-    input_tx.send(
-        livvi_core::interrupt::Interrupt::Message(
-            "Hello, world!".to_string()
-        )
-    ).await?;
+    input_tx
+        .send(livvi_core::interrupt::Interrupt::Message(
+            "Hello, world!".to_string(),
+        ))
+        .await?;
 
     let handle = tokio::spawn(async move {
         loop {
@@ -57,9 +61,12 @@ async fn main() -> Result<()> {
 
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
-            input_tx.send(livvi_core::interrupt::Interrupt::Message(
-                "Hello, world!".to_string()
-            )).await.unwrap();
+            input_tx
+                .send(livvi_core::interrupt::Interrupt::Message(
+                    "Hello, world!".to_string(),
+                ))
+                .await
+                .unwrap();
         }
     });
 
@@ -68,8 +75,8 @@ async fn main() -> Result<()> {
             tracing::info!("Shutdown signal received, terminating...");
         }
         _ = async {
-            let _ = agent.run().await.unwrap();
-            let _ = handle.await.unwrap();
+            agent.run().await.unwrap();
+            handle.await.unwrap();
         } => {}
     }
 

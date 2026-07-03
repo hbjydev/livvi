@@ -1,4 +1,4 @@
-use crate::model::{Message, Usage};
+use crate::model::{Message, ToolCall, Usage};
 
 #[derive(Debug, Clone)]
 /// Context holds the conversation context for an agent, including the system
@@ -42,31 +42,26 @@ impl Context {
 
     /// Push an output (assistant) message to the context, optionally with
     /// thinking text.
-    pub fn push_assistant(
-        &mut self,
-        content: impl Into<String>,
-        thinking_content: Option<String>,
-    ) {
-        self.turns.push(Message::assistant(content, thinking_content))
+    pub fn push_assistant(&mut self, content: impl Into<String>, thinking_content: Option<String>) {
+        self.turns
+            .push(Message::assistant(content, thinking_content))
     }
 
     /// Push tool calls from the assistant to the context, optionally with
-    /// thinking text.
+    /// text content and thinking text.
     pub fn push_assistant_tool_calls(
         &mut self,
-        content: impl Into<String>,
+        calls: Vec<ToolCall>,
+        content: Option<impl Into<String>>,
         thinking_content: Option<impl Into<String>>,
     ) {
-        self.turns.push(Message::assistant(content, thinking_content))
+        self.turns
+            .push(Message::with_tool_calls(calls, content, thinking_content))
     }
 
     /// Push a tool result message to the context, with the tool call ID and
     /// the result content.
-    pub fn push_tool_result(
-        &mut self,
-        id: impl Into<String>,
-        content: impl Into<String>,
-    ) {
+    pub fn push_tool_result(&mut self, id: impl Into<String>, content: impl Into<String>) {
         self.turns.push(Message::tool_result(id, content))
     }
 

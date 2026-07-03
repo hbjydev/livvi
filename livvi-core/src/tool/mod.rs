@@ -221,7 +221,10 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
 
     /// The schemas of all registered tools, suitable for passing to a provider.
     pub fn schemas(&self) -> HashMap<String, ToolDefinition> {
-        self.tools.iter().map(|(tool_name, tool)| (tool_name.clone(), tool.schema())).collect()
+        self.tools
+            .iter()
+            .map(|(tool_name, tool)| (tool_name.clone(), tool.schema()))
+            .collect()
     }
 
     /// Add a tool to the registry.

@@ -1,20 +1,22 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, BoxStream, StreamExt};
 use livvi_core::{
-    model::{Role, ToolCall, ToolResult, Transcript, TranscriptContent, TranscriptItem},
-    provider::{FinishReason, Provider, ProviderEvent, ProviderStream},
-    tool::Tools,
+    model::{Message, Role, ToolCall, Usage},
+    provider::{Provider, ProviderEvent},
+    tool::ToolDefinition,
 };
 use openai_api_rs::v1::chat_completion::{ChatCompletionMessage, Content, MessageRole};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
 
 use crate::common::tool_to_function;
 
+#[derive(Clone)]
 pub struct OpenAIChatCompletionsProvider {
     client: reqwest::Client,
     api_url: String,
@@ -38,16 +40,24 @@ impl OpenAIChatCompletionsProvider {
 }
 
 #[async_trait]
-impl<S: Send + Sync + 'static> Provider<S> for OpenAIChatCompletionsProvider {
-    async fn stream(&mut self, transcript: Transcript, tools: Tools<S>) -> Result<ProviderStream> {
-        let mut messages = vec![];
-        for item in transcript.items() {
-            messages.extend(into_openai_chat_completion(item));
+impl Provider for OpenAIChatCompletionsProvider {
+    fn clone_dyn(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(
+        &mut self,
+        tx: mpsc::Sender<ProviderEvent>,
+        messages: Vec<Message>,
+        tool_schemas: HashMap<String, ToolDefinition>,
+    ) -> Result<()> {
+        let mut chat_messages = vec![];
+        for msg in messages {
+            chat_messages.extend(into_openai_chat_completion(msg));
         }
 
-        let tool_items: Vec<openai_api_rs::v1::chat_completion::Tool> = tools
-            .schemas()
-            .into_iter()
+        let tool_items: Vec<openai_api_rs::v1::chat_completion::Tool> = tool_schemas
+            .into_values()
             .map(|tool| openai_api_rs::v1::chat_completion::Tool {
                 r#type: openai_api_rs::v1::chat_completion::ToolType::Function,
                 function: tool_to_function(tool),
@@ -56,7 +66,7 @@ impl<S: Send + Sync + 'static> Provider<S> for OpenAIChatCompletionsProvider {
 
         let body = ChatCompletionRequestBody {
             model: self.model_name.clone(),
-            messages,
+            messages: chat_messages,
             tools: if tool_items.is_empty() {
                 None
             } else {
@@ -88,39 +98,97 @@ impl<S: Send + Sync + 'static> Provider<S> for OpenAIChatCompletionsProvider {
 
         let bytes_stream: BoxStream<'static, Result<Bytes, reqwest::Error>> =
             Box::pin(response.bytes_stream());
-        let chunk_stream = parse_sse_stream(bytes_stream);
+        let mut chunk_stream = parse_sse_stream(bytes_stream);
 
-        let state = StreamState {
-            chunk_stream,
-            accumulators: HashMap::new(),
-            started: HashSet::new(),
-            finish_reason: None,
-            buffer: VecDeque::new(),
-            finalized: false,
-        };
+        let mut accumulators: HashMap<usize, ToolCallAccumulator> = HashMap::new();
+        let mut tool_call_started = false;
 
-        let events = stream::unfold(state, |mut state| async move {
-            loop {
-                if let Some(event) = state.buffer.pop_front() {
-                    return Some((event, state));
-                }
+        while let Some(chunk_result) = chunk_stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    if let Some(usage) = chunk.usage
+                        && tx
+                            .send(ProviderEvent::Usage(Usage {
+                                input_tokens: usage.prompt_tokens as usize,
+                                output_tokens: usage.completion_tokens as usize,
+                                reasoning_tokens: usage
+                                    .completion_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.reasoning_tokens)
+                                    .unwrap_or(0)
+                                    as usize,
+                                prompt_processing_ms: 0,
+                                generation_ms: 0,
+                            }))
+                            .await
+                            .is_err()
+                    {
+                        return Ok(());
+                    }
 
-                if state.finalized {
-                    return None;
-                }
+                    for choice in &chunk.choices {
+                        if let Some(content) = &choice.delta.content
+                            && tx
+                                .send(ProviderEvent::Token(content.clone()))
+                                .await
+                                .is_err()
+                        {
+                            return Ok(());
+                        }
 
-                match state.chunk_stream.next().await {
-                    Some(Ok(chunk)) => handle_chunk(&mut state, &chunk),
-                    Some(Err(e)) => return Some((Err(e), state)),
-                    None => {
-                        finalize_stream(&mut state);
-                        state.finalized = true;
+                        if let Some(reasoning) = choice
+                            .delta
+                            .reasoning
+                            .as_ref()
+                            .or(choice.delta.reasoning_content.as_ref())
+                            && tx
+                                .send(ProviderEvent::ThinkingToken(reasoning.clone()))
+                                .await
+                                .is_err()
+                        {
+                            return Ok(());
+                        }
+
+                        if !choice.delta.tool_calls.is_empty() && !tool_call_started {
+                            if tx.send(ProviderEvent::ToolCallStarted).await.is_err() {
+                                return Ok(());
+                            }
+                            tool_call_started = true;
+                        }
+
+                        for tc in &choice.delta.tool_calls {
+                            let index = tc.index.unwrap_or(0);
+                            let acc = accumulators.entry(index).or_default();
+                            if let Some(id) = &tc.id {
+                                acc.id = Some(id.clone());
+                            }
+                            if let Some(name) = tc.function.as_ref().and_then(|f| f.name.clone()) {
+                                acc.name = Some(name);
+                            }
+                            if let Some(args) =
+                                tc.function.as_ref().and_then(|f| f.arguments.clone())
+                            {
+                                acc.arguments.push_str(&args);
+                            }
+                        }
                     }
                 }
+                Err(e) => return Err(e),
             }
-        });
+        }
 
-        Ok(Box::pin(events))
+        let mut completed_calls = vec![];
+        for (_, acc) in accumulators {
+            if let (Some(id), Some(name)) = (acc.id, acc.name) {
+                let input = serde_json::from_str(&acc.arguments).unwrap_or_else(|_| json!({}));
+                completed_calls.push(ToolCall { id, name, input });
+            }
+        }
+        if !completed_calls.is_empty() {
+            let _ = tx.send(ProviderEvent::ToolCalls(completed_calls)).await;
+        }
+
+        Ok(())
     }
 }
 
@@ -145,8 +213,6 @@ struct ChatCompletionChunk {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionChunkChoice {
     delta: ChatCompletionChunkDelta,
-    #[serde(default)]
-    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -190,15 +256,6 @@ struct ToolCallAccumulator {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
-}
-
-struct StreamState {
-    chunk_stream: BoxStream<'static, Result<ChatCompletionChunk>>,
-    accumulators: HashMap<usize, ToolCallAccumulator>,
-    started: HashSet<usize>,
-    finish_reason: Option<String>,
-    buffer: VecDeque<Result<ProviderEvent>>,
-    finalized: bool,
 }
 
 fn parse_sse_stream(
@@ -284,184 +341,66 @@ fn extract_sse_data(buffer: &str) -> Option<(String, String)> {
     Some((String::new(), rest))
 }
 
-fn handle_chunk(state: &mut StreamState, chunk: &ChatCompletionChunk) {
-    if let Some(usage) = &chunk.usage {
-        state.buffer.push_back(Ok(ProviderEvent::Usage {
-            input_tokens: usage.prompt_tokens as usize,
-            output_tokens: usage.completion_tokens as usize,
-            reasoning_tokens: usage
-                .completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .unwrap_or(0) as usize,
-        }));
-    }
-
-    for choice in &chunk.choices {
-        if let Some(finish_reason) = &choice.finish_reason {
-            state.finish_reason = Some(finish_reason.clone());
-        }
-
-        if let Some(content) = &choice.delta.content {
-            state
-                .buffer
-                .push_back(Ok(ProviderEvent::TextDelta(content.clone())));
-        }
-
-        if let Some(reasoning) = choice
-            .delta
-            .reasoning
-            .as_ref()
-            .or(choice.delta.reasoning_content.as_ref())
-        {
-            state
-                .buffer
-                .push_back(Ok(ProviderEvent::ReasoningDelta(reasoning.clone())));
-        }
-
-        for tc in &choice.delta.tool_calls {
-            let index = tc.index.unwrap_or(0);
-            let acc = state.accumulators.entry(index).or_default();
-
-            if let Some(id) = &tc.id {
-                acc.id = Some(id.clone());
-            }
-            if let Some(name) = tc.function.as_ref().and_then(|f| f.name.clone()) {
-                acc.name = Some(name);
-            }
-            if let Some(args) = tc.function.as_ref().and_then(|f| f.arguments.clone()) {
-                acc.arguments.push_str(&args);
-            }
-
-            if let (Some(id), Some(name)) = (acc.id.clone(), acc.name.clone()) {
-                if !state.started.contains(&index) {
-                    state
-                        .buffer
-                        .push_back(Ok(ProviderEvent::ToolCallStart { id, name }));
-                    state.started.insert(index);
-                    if !acc.arguments.is_empty() {
-                        state.buffer.push_back(Ok(ProviderEvent::ToolCallDelta {
-                            id: acc.id.clone().unwrap(),
-                            arguments: acc.arguments.clone(),
-                        }));
-                    }
-                } else if let Some(args) = tc.function.as_ref().and_then(|f| f.arguments.clone()) {
-                    state.buffer.push_back(Ok(ProviderEvent::ToolCallDelta {
-                        id: acc.id.clone().unwrap(),
-                        arguments: args,
-                    }));
-                }
-            }
-        }
-    }
-}
-
-fn finalize_stream(state: &mut StreamState) {
-    let mut completed_indices = vec![];
-
-    for (&index, acc) in &state.accumulators {
-        if let Some(id) = &acc.id {
-            if !state.started.contains(&index) {
-                if let Some(name) = &acc.name {
-                    state.buffer.push_back(Ok(ProviderEvent::ToolCallStart {
-                        id: id.clone(),
-                        name: name.clone(),
-                    }));
-                    if !acc.arguments.is_empty() {
-                        state.buffer.push_back(Ok(ProviderEvent::ToolCallDelta {
-                            id: id.clone(),
-                            arguments: acc.arguments.clone(),
-                        }));
-                    }
-                } else {
-                    state.buffer.push_back(Err(anyhow::anyhow!(
-                        "Tool call {} completed without a name",
-                        id
-                    )));
-                    continue;
-                }
-            }
-            state
-                .buffer
-                .push_back(Ok(ProviderEvent::ToolCallDone { id: id.clone() }));
-            completed_indices.push(index);
-        }
-    }
-
-    let has_tool_calls = !completed_indices.is_empty();
-    let reason = match state.finish_reason.as_deref() {
-        Some("stop") => FinishReason::EndTurn,
-        Some("tool_calls") => FinishReason::ToolCalls,
-        Some("length") => FinishReason::MaxTokens,
-        Some("content_filter") => FinishReason::ContentFilter,
-        Some(other) => FinishReason::Other(other.to_string()),
-        None => {
-            if has_tool_calls {
-                FinishReason::ToolCalls
-            } else {
-                FinishReason::EndTurn
-            }
-        }
-    };
-
-    state.buffer.push_back(Ok(ProviderEvent::Done { reason }));
-}
-
-fn into_openai_chat_completion(ti: TranscriptItem) -> Vec<ChatCompletionMessage> {
+fn into_openai_chat_completion(msg: Message) -> Vec<ChatCompletionMessage> {
     let mut messages = vec![];
-    let mut text_parts = vec![];
-    let mut tool_calls = vec![];
 
-    for block in ti.blocks {
-        match block {
-            TranscriptContent::Text(text) => text_parts.push(text),
-            TranscriptContent::ToolCall(ToolCall { id, name, input }) => {
-                tool_calls.push(openai_api_rs::v1::chat_completion::ToolCall {
-                    id,
-                    r#type: "function".to_string(),
-                    function: openai_api_rs::v1::chat_completion::ToolCallFunction {
-                        name: Some(name),
-                        arguments: Some(input.to_string()),
-                    },
-                });
-            }
-            TranscriptContent::ToolResult(ToolResult { id, content, .. }) => {
+    match msg.role {
+        Role::Tool => {
+            if let (Some(content), Some(tool_call_id)) = (msg.content, msg.tool_call_id) {
                 messages.push(ChatCompletionMessage {
                     role: MessageRole::tool,
                     content: Content::Text(content),
                     name: None,
                     tool_calls: None,
-                    tool_call_id: Some(id),
+                    tool_call_id: Some(tool_call_id),
                 });
             }
-            TranscriptContent::Reasoning { .. } => {
-                // Chat completions do not round-trip reasoning.
-            }
         }
-    }
+        Role::Assistant => {
+            let tool_calls = msg
+                .tool_calls
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tc| openai_api_rs::v1::chat_completion::ToolCall {
+                    id: tc.id,
+                    r#type: "function".to_string(),
+                    function: openai_api_rs::v1::chat_completion::ToolCallFunction {
+                        name: Some(tc.name),
+                        arguments: Some(tc.input.to_string()),
+                    },
+                })
+                .collect::<Vec<_>>();
 
-    if !text_parts.is_empty() || !tool_calls.is_empty() {
-        let content = if text_parts.is_empty() {
-            Content::Text(String::new())
-        } else {
-            Content::Text(text_parts.join("\n"))
-        };
-
-        messages.push(ChatCompletionMessage {
-            role: match ti.role {
-                Role::User => MessageRole::user,
-                Role::Assistant => MessageRole::assistant,
-                Role::System => MessageRole::system,
-            },
-            content,
-            name: None,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            tool_call_id: None,
-        });
+            messages.push(ChatCompletionMessage {
+                role: MessageRole::assistant,
+                content: Content::Text(msg.content.unwrap_or_default()),
+                name: None,
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                },
+                tool_call_id: None,
+            });
+        }
+        Role::User => {
+            messages.push(ChatCompletionMessage {
+                role: MessageRole::user,
+                content: Content::Text(msg.content.unwrap_or_default()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        Role::System => {
+            messages.push(ChatCompletionMessage {
+                role: MessageRole::system,
+                content: Content::Text(msg.content.unwrap_or_default()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
     }
 
     messages
@@ -470,33 +409,37 @@ fn into_openai_chat_completion(ti: TranscriptItem) -> Vec<ChatCompletionMessage>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use livvi_core::model::{ToolCall, ToolResult};
+    use livvi_core::model::ToolCall;
     use serde_json::json;
 
     #[test]
     fn into_openai_user_message_is_not_empty() {
-        let item = TranscriptItem::user_message("Hello, world!");
-        let messages = into_openai_chat_completion(item);
+        let msg = Message::user("Hello, world!");
+        let messages = into_openai_chat_completion(msg);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::user);
     }
 
     #[test]
     fn into_openai_assistant_text() {
-        let item = TranscriptItem::assistant_message("Hi there.");
-        let messages = into_openai_chat_completion(item);
+        let msg = Message::assistant("Hi there.", None::<&str>);
+        let messages = into_openai_chat_completion(msg);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::assistant);
     }
 
     #[test]
     fn into_openai_function_call_and_output() {
-        let item = TranscriptItem::assistant_tool_call(ToolCall {
-            name: "calc".to_string(),
-            id: "call-1".to_string(),
-            input: json!({"a": 2, "b": 2}),
-        });
-        let messages = into_openai_chat_completion(item);
+        let msg = Message::with_tool_calls(
+            vec![ToolCall {
+                name: "calc".to_string(),
+                id: "call-1".to_string(),
+                input: json!({"a": 2, "b": 2}),
+            }],
+            None::<&str>,
+            None::<&str>,
+        );
+        let messages = into_openai_chat_completion(msg);
         assert_eq!(messages.len(), 1);
         assert!(messages[0].tool_calls.is_some());
 
@@ -511,12 +454,8 @@ mod tests {
             "{\"a\":2,\"b\":2}"
         );
 
-        let item = TranscriptItem::tool_result(ToolResult {
-            id: "call-1".to_string(),
-            content: "4".to_string(),
-            is_error: false,
-        });
-        let messages = into_openai_chat_completion(item);
+        let msg = Message::tool_result("call-1", "4");
+        let messages = into_openai_chat_completion(msg);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::tool);
         assert_eq!(messages[0].tool_call_id.as_deref(), Some("call-1"));
@@ -528,36 +467,36 @@ mod tests {
     }
 
     #[test]
-    fn transcript_round_trips_to_messages() {
-        let mut transcript = Transcript::new();
-        transcript.add_item(TranscriptItem::system_message("Be helpful."));
-        transcript.add_item(TranscriptItem::user_message("What's 2+2?"));
-        transcript.add_item(TranscriptItem::assistant_tool_call(ToolCall {
-            name: "calc".to_string(),
-            id: "call-1".to_string(),
-            input: json!({"a": 2, "b": 2}),
-        }));
-        transcript.add_item(TranscriptItem::tool_result(ToolResult {
-            id: "call-1".to_string(),
-            content: "4".to_string(),
-            is_error: false,
-        }));
+    fn messages_round_trip_to_chat_format() {
+        let messages = vec![
+            Message::system("Be helpful."),
+            Message::user("What's 2+2?"),
+            Message::with_tool_calls(
+                vec![ToolCall {
+                    name: "calc".to_string(),
+                    id: "call-1".to_string(),
+                    input: json!({"a": 2, "b": 2}),
+                }],
+                None::<&str>,
+                None::<&str>,
+            ),
+            Message::tool_result("call-1", "4"),
+        ];
 
-        let messages: Vec<_> = transcript
-            .items()
+        let chat_messages: Vec<_> = messages
             .into_iter()
             .flat_map(into_openai_chat_completion)
             .collect();
 
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0].role, MessageRole::system);
-        assert_eq!(messages[1].role, MessageRole::user);
-        assert_eq!(messages[2].role, MessageRole::assistant);
-        assert!(messages[2].tool_calls.is_some());
-        assert_eq!(messages[3].role, MessageRole::tool);
-        assert_eq!(messages[3].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(chat_messages.len(), 4);
+        assert_eq!(chat_messages[0].role, MessageRole::system);
+        assert_eq!(chat_messages[1].role, MessageRole::user);
+        assert_eq!(chat_messages[2].role, MessageRole::assistant);
+        assert!(chat_messages[2].tool_calls.is_some());
+        assert_eq!(chat_messages[3].role, MessageRole::tool);
+        assert_eq!(chat_messages[3].tool_call_id.as_deref(), Some("call-1"));
 
-        let serialized = serde_json::to_value(&messages).unwrap();
+        let serialized = serde_json::to_value(&chat_messages).unwrap();
         assert_eq!(serialized[2]["tool_calls"][0]["id"], "call-1");
         assert_eq!(serialized[3]["tool_call_id"], "call-1");
     }
@@ -574,111 +513,5 @@ mod tests {
     fn extract_sse_data_handles_partial_buffer() {
         let buffer = "data: {\"foo\":1}";
         assert!(extract_sse_data(buffer).is_none());
-    }
-
-    #[test]
-    fn handle_chunk_emits_text_delta() {
-        let mut state = StreamState {
-            chunk_stream: Box::pin(stream::empty()),
-            accumulators: HashMap::new(),
-            started: HashSet::new(),
-            finish_reason: None,
-            buffer: VecDeque::new(),
-            finalized: false,
-        };
-        let chunk = ChatCompletionChunk {
-            choices: vec![ChatCompletionChunkChoice {
-                delta: ChatCompletionChunkDelta {
-                    content: Some("Hello".to_string()),
-                    ..Default::default()
-                },
-                finish_reason: None,
-            }],
-            usage: None,
-        };
-        handle_chunk(&mut state, &chunk);
-        assert_eq!(state.buffer.len(), 1);
-        assert!(matches!(
-            state.buffer[0].as_ref().unwrap(),
-            ProviderEvent::TextDelta(text) if text == "Hello"
-        ));
-    }
-
-    #[test]
-    fn handle_chunk_accumulates_tool_calls() {
-        let mut state = StreamState {
-            chunk_stream: Box::pin(stream::empty()),
-            accumulators: HashMap::new(),
-            started: HashSet::new(),
-            finish_reason: None,
-            buffer: VecDeque::new(),
-            finalized: false,
-        };
-
-        let chunk1 = ChatCompletionChunk {
-            choices: vec![ChatCompletionChunkChoice {
-                delta: ChatCompletionChunkDelta {
-                    tool_calls: vec![ChatCompletionChunkToolCall {
-                        index: Some(0),
-                        id: Some("call-1".to_string()),
-                        function: Some(ChatCompletionChunkToolCallFunction {
-                            name: Some("calc".to_string()),
-                            arguments: Some("".to_string()),
-                        }),
-                    }],
-                    ..Default::default()
-                },
-                finish_reason: None,
-            }],
-            usage: None,
-        };
-        handle_chunk(&mut state, &chunk1);
-        assert!(matches!(
-            state.buffer[0].as_ref().unwrap(),
-            ProviderEvent::ToolCallStart { id, name } if id == "call-1" && name == "calc"
-        ));
-
-        let chunk2 = ChatCompletionChunk {
-            choices: vec![ChatCompletionChunkChoice {
-                delta: ChatCompletionChunkDelta {
-                    tool_calls: vec![ChatCompletionChunkToolCall {
-                        index: Some(0),
-                        id: None,
-                        function: Some(ChatCompletionChunkToolCallFunction {
-                            name: None,
-                            arguments: Some("{\"a\":2}".to_string()),
-                        }),
-                    }],
-                    ..Default::default()
-                },
-                finish_reason: None,
-            }],
-            usage: None,
-        };
-        state.buffer.clear();
-        handle_chunk(&mut state, &chunk2);
-        assert!(matches!(
-            state.buffer[0].as_ref().unwrap(),
-            ProviderEvent::ToolCallDelta { id, arguments } if id == "call-1" && arguments == "{\"a\":2}"
-        ));
-    }
-
-    #[test]
-    fn finalize_stream_emits_done() {
-        let mut state = StreamState {
-            chunk_stream: Box::pin(stream::empty()),
-            accumulators: HashMap::new(),
-            started: HashSet::new(),
-            finish_reason: Some("stop".to_string()),
-            buffer: VecDeque::new(),
-            finalized: false,
-        };
-        finalize_stream(&mut state);
-        assert!(matches!(
-            state.buffer[0].as_ref().unwrap(),
-            ProviderEvent::Done {
-                reason: FinishReason::EndTurn
-            }
-        ));
     }
 }

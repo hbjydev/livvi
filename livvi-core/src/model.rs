@@ -2,8 +2,7 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     User,
     Assistant,
@@ -80,9 +79,12 @@ impl Message {
         }
     }
 
-    pub fn assistant(content: impl Into<String>, thinking_content: Option<impl Into<String>>) -> Self {
+    pub fn assistant(
+        content: impl Into<String>,
+        thinking_content: Option<impl Into<String>>,
+    ) -> Self {
         Message {
-            role: Role::User,
+            role: Role::Assistant,
             content: Some(content.into()),
             thinking_content: thinking_content.map(|c| c.into()),
             tool_calls: None,
@@ -104,10 +106,7 @@ impl Message {
         }
     }
 
-    pub fn tool_result(
-        id: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
         Message {
             role: Role::Tool,
             content: Some(content.into()),

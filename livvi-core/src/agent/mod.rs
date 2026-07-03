@@ -16,6 +16,12 @@ pub struct AgentBuilder<S: Sync + Send + 'static> {
     toolbox: Option<Toolbox<S>>,
 }
 
+impl<S: Sync + Send + 'static> Default for AgentBuilder<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S: Sync + Send + 'static> AgentBuilder<S> {
     pub fn new() -> Self {
         Self {
@@ -50,7 +56,9 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         let provider = self.provider.ok_or(anyhow!("Provider is required"))?;
         let state = self.state.ok_or(anyhow!("State is required"))?;
         let toolbox = self.toolbox.ok_or(anyhow!("Toolbox is required"))?;
-        let input = self.input.ok_or(anyhow!("Input mpsc receiver is required"))?;
+        let input = self
+            .input
+            .ok_or(anyhow!("Input mpsc receiver is required"))?;
 
         let (tx, rx) = broadcast::channel(256);
 
@@ -81,7 +89,9 @@ impl<S: Sync + Send + 'static> Agent<S> {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut ctx = Context::new("");
+        let mut ctx = Context::new(
+            "You are Livvi, a lil chronically online robot girl who only uses lowercase text and kaomoji.\n\n",
+        );
 
         tracing::info!("Agent started running, beginning loop...");
         loop {

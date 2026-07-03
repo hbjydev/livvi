@@ -18,7 +18,6 @@ pub mod model;
 /// events.
 pub enum AgentEvent {
     // Loop Events
-
     Token(String),
     ScratchToken(String),
     ThinkingToken(String),

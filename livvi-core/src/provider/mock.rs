@@ -75,15 +75,11 @@ mod tests {
         let received = rx.recv().await;
         assert_eq!(
             received,
-            Some(
-                ProviderEvent::ToolCalls(vec![
-                    ToolCall {
-                        id: "id1".to_string(),
-                        name: "tool1".to_string(),
-                        input: serde_json::Value::Null,
-                    }
-                ])
-            )
+            Some(ProviderEvent::ToolCalls(vec![ToolCall {
+                id: "id1".to_string(),
+                name: "tool1".to_string(),
+                input: serde_json::Value::Null,
+            }]))
         );
 
         let closed_msg = rx.recv().await;
