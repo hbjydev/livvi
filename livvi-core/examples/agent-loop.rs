@@ -50,8 +50,10 @@ async fn main() -> Result<()> {
     ).await?;
 
     let handle = tokio::spawn(async move {
-        while let Ok(event) = rx.recv().await {
-            println!("Agent event: {:?}", event);
+        loop {
+            while let Ok(event) = rx.recv().await {
+                println!("Agent event: {:?}", event);
+            }
 
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 

@@ -26,7 +26,6 @@ impl<S: Sync + Send + 'static> Agent<S> {
     ) -> Result<()> {
         tracing::info!("Handling input interrupt: {:?}", interrupt);
         self.run_turn(interrupt, context).await?;
-
         Ok(())
     }
 }

@@ -4,8 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::context::Context;
-use crate::model::{ToolCall, Usage};
+use crate::model::{Message, ToolCall, Usage};
 use crate::tool::ToolDefinition;
 
 mod mock;
@@ -25,7 +24,15 @@ pub trait Provider: Send + Sync + 'static {
     async fn stream(
         &mut self,
         tx: mpsc::Sender<ProviderEvent>,
-        ctx: Context,
+        messages: Vec<Message>,
         tool_schemas: HashMap<String, ToolDefinition>,
     ) -> Result<()>;
+
+    fn clone_dyn(&self) -> Box<dyn Provider>;
+}
+
+impl Clone for Box<dyn Provider> {
+    fn clone(&self) -> Box<dyn Provider> {
+        self.clone_dyn()
+    }
 }

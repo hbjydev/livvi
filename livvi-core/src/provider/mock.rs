@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::context::Context;
+use crate::model::Message;
 use crate::provider::{Provider, ProviderEvent};
 use crate::tool::ToolDefinition;
 
@@ -26,7 +26,7 @@ impl Provider for MockProvider {
     async fn stream(
         &mut self,
         tx: mpsc::Sender<ProviderEvent>,
-        _ctx: Context,
+        _ctx: Vec<Message>,
         _tool_schemas: HashMap<String, ToolDefinition>,
     ) -> Result<()> {
         for event in self.events.drain(..) {
@@ -34,11 +34,15 @@ impl Provider for MockProvider {
         }
         Ok(())
     }
+
+    fn clone_dyn(&self) -> Box<dyn Provider> {
+        Box::new(self.clone()) // Forward to the derive(Clone) impl
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{model::ToolCall, tool::Toolbox};
+    use crate::{context::Context, model::ToolCall, tool::Toolbox};
 
     use super::*;
 
@@ -60,7 +64,7 @@ mod tests {
 
         tokio::spawn(async move {
             provider
-                .stream(tx, ctx, tools.schemas())
+                .stream(tx, ctx.as_messages(), tools.schemas())
                 .await
                 .unwrap();
         });

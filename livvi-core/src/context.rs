@@ -45,7 +45,7 @@ impl Context {
     pub fn push_assistant(
         &mut self,
         content: impl Into<String>,
-        thinking_content: Option<impl Into<String>>,
+        thinking_content: Option<String>,
     ) {
         self.turns.push(Message::assistant(content, thinking_content))
     }
@@ -81,6 +81,14 @@ impl Context {
     pub fn clear(&mut self) {
         self.turns.clear();
         self.usage = Usage::default();
+    }
+
+    pub fn update_usage(&mut self, usage: Usage) {
+        self.usage.input_tokens += usage.input_tokens;
+        self.usage.output_tokens += usage.output_tokens;
+        self.usage.prompt_processing_ms += usage.prompt_processing_ms;
+        self.usage.reasoning_tokens += usage.reasoning_tokens;
+        self.usage.generation_ms += usage.generation_ms;
     }
 }
 

@@ -56,13 +56,19 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
 
         Ok((
             rx,
-            Agent { provider, state, input, output: tx, toolbox },
+            Agent {
+                provider: Arc::new(provider),
+                state,
+                input,
+                output: tx,
+                toolbox,
+            },
         ))
     }
 }
 
 pub struct Agent<S: Sync + Send + 'static> {
-    provider: Box<dyn crate::provider::Provider>,
+    provider: Arc<Box<dyn crate::provider::Provider>>,
     state: Arc<S>,
     input: mpsc::Receiver<Interrupt>,
     output: broadcast::Sender<AgentEvent>,
