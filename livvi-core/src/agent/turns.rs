@@ -104,6 +104,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
             break;
         }
 
+        let _ = self.output.send(AgentEvent::Done);
+
+        info!("Turn completed. Stashed interrupt: {:?}", stashed_interrupt);
+
         Ok(stashed_interrupt)
     }
 
