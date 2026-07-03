@@ -1,7 +1,9 @@
 use anyhow::Result;
-use livvi_core::tool::{Input, tool};
+use livvi_core::tool::{Input, State, tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::DiscordState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DiscordSendInput {
@@ -27,6 +29,7 @@ pub async fn discord_send(
         channel_id,
         reply_to_message_id,
     }): Input<DiscordSendInput>,
+    State(state): State<'_, DiscordState>,
 ) -> Result<DiscordSendOutput, DiscordSendError> {
     if message.is_empty() {
         return Err(DiscordSendError {
@@ -34,14 +37,23 @@ pub async fn discord_send(
         });
     }
 
-    tracing::info!(
-        "Sending message to Discord channel {}: {}",
-        channel_id,
-        message
-    );
-    if let Some(reply_to) = reply_to_message_id {
-        tracing::info!("Replying to message ID: {}", reply_to);
-    }
+    let channel_id = channel_id.parse::<u64>().map_err(|e| DiscordSendError {
+        message: format!("Invalid channel_id: {e}"),
+    })?;
+
+    let reply_to_message_id = match reply_to_message_id {
+        Some(id) => Some(id.parse::<u64>().map_err(|e| DiscordSendError {
+            message: format!("Invalid reply_to_message_id: {e}"),
+        })?),
+        None => None,
+    };
+
+    state
+        .send_message(&message, channel_id, reply_to_message_id)
+        .await
+        .map_err(|e| DiscordSendError {
+            message: format!("Failed to send Discord message: {e}"),
+        })?;
 
     Ok(DiscordSendOutput { ok: true })
 }

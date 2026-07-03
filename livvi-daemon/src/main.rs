@@ -1,9 +1,12 @@
 use std::env;
+use std::sync::Arc;
 
 use anyhow::Result;
 use livvi_core::{agent::Agent, interrupt::Interrupt, tool::Toolbox};
+use livvi_discord::DiscordState;
 use livvi_discord::DiscordTransport;
-use livvi_openai::OpenAIProvider;
+use livvi_discord::tools::discord_send;
+use livvi_openai::OpenAIChatCompletionsProvider;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -39,10 +42,11 @@ async fn main() -> Result<()> {
 
     let (interrupt_tx, interrupt_rx) = mpsc::channel::<Interrupt>(256);
 
+    let discord_state = Arc::new(DiscordState::new(&discord_token));
     let transport = DiscordTransport::new(&discord_token, interrupt_tx).await?;
 
     let provider: Box<dyn livvi_core::provider::Provider> = match openai_api_key {
-        Some(key) => Box::new(OpenAIProvider::new(&key, &openai_base_url, &openai_model)?),
+        Some(key) => Box::new(OpenAIChatCompletionsProvider::new(&key, &openai_base_url, &openai_model)?),
         None => {
             warn!("LIVVI_OPENAI_API_KEY not set; using mock provider");
             Box::new(livvi_core::provider::MockProvider::new(vec![]))
@@ -51,8 +55,12 @@ async fn main() -> Result<()> {
 
     let (mut agent_events, agent) = Agent::builder()
         .with_provider(provider)
-        .with_state(())
-        .with_toolbox(Toolbox::new())
+        .with_state(Arc::clone(&discord_state))
+        .with_toolbox({
+            let mut toolbox = Toolbox::new();
+            toolbox.add_tool(discord_send);
+            toolbox
+        })
         .with_input(interrupt_rx)
         .build()?;
 

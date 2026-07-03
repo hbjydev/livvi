@@ -1,5 +1,9 @@
 pub mod tools;
 
+mod state;
+
+pub use state::DiscordState;
+
 use anyhow::Result;
 use livvi_core::interrupt::Interrupt;
 use serenity::all::{Client, Context, EventHandler, GatewayIntents, Message, Ready};

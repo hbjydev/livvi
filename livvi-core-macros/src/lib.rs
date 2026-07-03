@@ -31,6 +31,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
         .unwrap_or_default();
 
     let input_type = find_input_type(&input_fn.sig.inputs)?;
+    let state_bounds = find_state_bounds(&input_fn.sig.inputs)?;
 
     let mut impl_fn = input_fn.clone();
     impl_fn.sig.ident = impl_fn_name.clone();
@@ -47,21 +48,45 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
         .map(|(i, _)| format_ident!("__param_{}", i))
         .collect::<Vec<_>>();
 
-    let handler_impl = quote! {
-        #[#crate_path::async_trait]
-        impl<S: ::core::marker::Send + ::core::marker::Sync + 'static> #crate_path::tool::ToolHandler<S> for #wrapper_name {
-            fn schema(&self) -> #crate_path::tool::ToolDefinition {
-                #crate_path::tool::ToolDefinition {
-                    name: #tool_name.to_string(),
-                    description: #description.to_string(),
-                    input_schema: #crate_path::schemars::schema_for!(#input_type),
+    let handler_impl = if state_bounds.is_empty() {
+        quote! {
+            #[#crate_path::async_trait]
+            impl<S: ::core::marker::Send + ::core::marker::Sync + 'static> #crate_path::tool::ToolHandler<S> for #wrapper_name {
+                fn schema(&self) -> #crate_path::tool::ToolDefinition {
+                    #crate_path::tool::ToolDefinition {
+                        name: #tool_name.to_string(),
+                        description: #description.to_string(),
+                        input_schema: #crate_path::schemars::schema_for!(#input_type),
+                    }
+                }
+
+                async fn call(&self, ctx: &#crate_path::tool::ToolContext<'_, S>, args: #crate_path::serde_json::Value) -> #crate_path::tool::ToolCallOutput {
+                    #extraction
+                    let __tool_result = #impl_fn_name(#(#param_names),*).await;
+                    #output_expr
                 }
             }
+        }
+    } else {
+        quote! {
+            #[#crate_path::async_trait]
+            impl<S: ::core::marker::Send + ::core::marker::Sync + 'static> #crate_path::tool::ToolHandler<S> for #wrapper_name
+            where
+                #(#state_bounds),*
+            {
+                fn schema(&self) -> #crate_path::tool::ToolDefinition {
+                    #crate_path::tool::ToolDefinition {
+                        name: #tool_name.to_string(),
+                        description: #description.to_string(),
+                        input_schema: #crate_path::schemars::schema_for!(#input_type),
+                    }
+                }
 
-            async fn call(&self, ctx: &#crate_path::tool::ToolContext<'_, S>, args: #crate_path::serde_json::Value) -> #crate_path::tool::ToolCallOutput {
-                #extraction
-                let __tool_result = #impl_fn_name(#(#param_names),*).await;
-                #output_expr
+                async fn call(&self, ctx: &#crate_path::tool::ToolContext<'_, S>, args: #crate_path::serde_json::Value) -> #crate_path::tool::ToolCallOutput {
+                    #extraction
+                    let __tool_result = #impl_fn_name(#(#param_names),*).await;
+                    #output_expr
+                }
             }
         }
     };
@@ -187,6 +212,46 @@ fn extract_input_type(ty: &Type) -> Option<&Type> {
         }
     }
     None
+}
+
+fn extract_state_type(ty: &Type) -> Option<&Type> {
+    if let Type::Path(type_path) = ty {
+        let segment = type_path.path.segments.last()?;
+        if segment.ident != "State" {
+            return None;
+        }
+        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+            // State may include a lifetime: State<'_, T>. Skip the lifetime and
+            // return the first concrete type argument.
+            return args.args.iter().find_map(|arg| {
+                if let syn::GenericArgument::Type(ty) = arg {
+                    Some(ty)
+                } else {
+                    None
+                }
+            });
+        }
+    }
+    None
+}
+
+fn find_state_bounds(
+    inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>,
+) -> syn::Result<Vec<proc_macro2::TokenStream>> {
+    let mut bounds = Vec::new();
+
+    for input in inputs {
+        let typed = match input {
+            FnArg::Typed(t) => t,
+            FnArg::Receiver(_) => continue,
+        };
+
+        if let Some(ty) = extract_state_type(&typed.ty) {
+            bounds.push(quote! { S: ::core::convert::AsRef<#ty> });
+        }
+    }
+
+    Ok(bounds)
 }
 
 fn generate_extraction(
