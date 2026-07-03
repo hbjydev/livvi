@@ -1,50 +1,31 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use tokio::sync::mpsc;
 
-use crate::{model::Transcript, tool::Tools};
+use crate::context::Context;
+use crate::model::{ToolCall, Usage};
+use crate::tool::ToolDefinition;
 
 mod mock;
 pub use mock::MockProvider;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FinishReason {
-    EndTurn,
-    ToolCalls,
-    MaxTokens,
-    ContentFilter,
-    Incomplete,
-    Other(String),
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
-    TextDelta(String),
-    ReasoningDelta(String),
-    ToolCallStart {
-        id: String,
-        name: String,
-    },
-    ToolCallDelta {
-        id: String,
-        arguments: String,
-    },
-    ToolCallDone {
-        id: String,
-    },
-    Usage {
-        input_tokens: usize,
-        output_tokens: usize,
-        reasoning_tokens: usize,
-    },
-    Done {
-        reason: FinishReason,
-    },
+    Token(String),
+    ThinkingToken(String),
+    Usage(Usage),
+    ToolCalls(Vec<ToolCall>),
+    ToolCallStarted,
 }
-
-pub type ProviderStream = BoxStream<'static, Result<ProviderEvent>>;
 
 #[async_trait]
-pub trait Provider<S: Send + Sync + 'static>: Send + Sync + 'static {
-    async fn stream(&mut self, transcript: Transcript, tools: Tools<S>) -> Result<ProviderStream>;
+pub trait Provider: Send + Sync + 'static {
+    async fn stream(
+        &mut self,
+        tx: mpsc::Sender<ProviderEvent>,
+        ctx: Context,
+        tool_schemas: HashMap<String, ToolDefinition>,
+    ) -> Result<()>;
 }

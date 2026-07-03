@@ -1,9 +1,10 @@
 use anyhow::Result;
-use livvi_core::agent::Agent;
-use livvi_core::provider::{FinishReason, MockProvider, ProviderEvent};
-use livvi_core::tool::{Input, Tools, tool};
+// use livvi_core::agent::Agent;
+// use livvi_core::provider::{FinishReason, MockProvider, ProviderEvent};
+use livvi_core::{agent::Agent, provider::{MockProvider, ProviderEvent}, tool::{Input, Toolbox, tool}};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct CalcInput {
@@ -17,43 +18,40 @@ async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
     a + b
 }
 
+pub struct AgentState;
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut tools = Tools::new();
+    let state = AgentState;
+    let mut tools = Toolbox::new();
     tools.add_tool(calc);
 
     let provider = MockProvider::new(vec![
-        vec![
-            ProviderEvent::ToolCallStart {
-                id: "call-1".to_string(),
-                name: "calc".to_string(),
-            },
-            ProviderEvent::ToolCallDelta {
-                id: "call-1".to_string(),
-                arguments: "{\"a\":2,\"b\":2}".to_string(),
-            },
-            ProviderEvent::ToolCallDone {
-                id: "call-1".to_string(),
-            },
-            ProviderEvent::Done {
-                reason: FinishReason::ToolCalls,
-            },
-        ],
-        vec![
-            ProviderEvent::TextDelta("2 + 2 is 4.".to_string()),
-            ProviderEvent::Done {
-                reason: FinishReason::EndTurn,
-            },
-        ],
+        ProviderEvent::Token("Hello, world!".to_string()),
     ]);
 
-    let mut agent = Agent::new(provider, tools, ());
+    let (input_tx, input_rx) = mpsc::channel(256);
 
-    let result = agent.run("Hello, world!").await?;
+    let (mut rx, agent) = Agent::builder()
+        .with_provider(Box::new(provider))
+        .with_input(input_rx)
+        .with_state(state)
+        .with_toolbox(tools)
+        .build()?;
 
-    for item in result.items().iter() {
-        println!("{:?}", item);
-    }
+    input_tx.send(
+        livvi_core::interrupt::Interrupt::Message(
+            "Hello, world!".to_string()
+        )
+    ).await?;
 
+    let handle = tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            println!("Agent event: {:?}", event);
+        }
+    });
+
+    let _ = agent.run().await?;
+    let _ = handle.await?;
     Ok(())
 }

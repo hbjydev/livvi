@@ -1,12 +1,14 @@
-use std::{fmt::Display, time::Instant};
+use std::fmt::Display;
 
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
 pub enum Role {
     User,
     Assistant,
     System,
+    Tool,
 }
 
 impl Display for Role {
@@ -15,111 +17,116 @@ impl Display for Role {
             Role::User => write!(f, "user"),
             Role::Assistant => write!(f, "assistant"),
             Role::System => write!(f, "system"),
+            Role::Tool => write!(f, "tool"),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
-    pub name: String,
+    /// The ID of the specific tool call.
     pub id: String,
+
+    /// The name of the tool being called.
+    pub name: String,
+
+    /// The input provided to the tool call, represented as a JSON value.
     pub input: serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
+    /// The ID of the specific tool call that produced this result.
     pub id: String,
+
+    /// The tool results, represented as a JSON value.
     pub content: String,
+
+    /// Indicates whether the tool call resulted in an error.
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TranscriptContent {
-    Text(String),
-    ToolCall(ToolCall),
-    ToolResult(ToolResult),
-    Reasoning { metadata: Value, text: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct TranscriptItem {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Message {
     pub role: Role,
-    pub blocks: Vec<TranscriptContent>,
-    pub created_at: Instant,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
-impl TranscriptItem {
-    pub fn user_message(content: impl Into<String>) -> Self {
-        TranscriptItem {
-            role: Role::User,
-            blocks: vec![TranscriptContent::Text(content.into())],
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn assistant_message(content: impl Into<String>) -> Self {
-        TranscriptItem {
-            role: Role::Assistant,
-            blocks: vec![TranscriptContent::Text(content.into())],
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn assistant_reasoning(content: impl Into<String>) -> Self {
-        TranscriptItem {
-            role: Role::Assistant,
-            blocks: vec![TranscriptContent::Reasoning {
-                text: content.into(),
-                metadata: json!({}),
-            }],
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn assistant_tool_call(tool_call: ToolCall) -> Self {
-        TranscriptItem {
-            role: Role::Assistant,
-            blocks: vec![TranscriptContent::ToolCall(tool_call)],
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn tool_result(tool_result: ToolResult) -> Self {
-        TranscriptItem {
-            role: Role::User,
-            blocks: vec![TranscriptContent::ToolResult(tool_result)],
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn system_message(content: impl Into<String>) -> Self {
-        TranscriptItem {
+impl Message {
+    pub fn system(content: impl Into<String>) -> Self {
+        Message {
             role: Role::System,
-            blocks: vec![TranscriptContent::Text(content.into())],
-            created_at: Instant::now(),
+            content: Some(content.into()),
+            thinking_content: None,
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Message {
+            role: Role::User,
+            content: Some(content.into()),
+            thinking_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>, thinking_content: Option<impl Into<String>>) -> Self {
+        Message {
+            role: Role::User,
+            content: Some(content.into()),
+            thinking_content: thinking_content.map(|c| c.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn with_tool_calls(
+        calls: Vec<ToolCall>,
+        content: Option<impl Into<String>>,
+        thinking_content: Option<impl Into<String>>,
+    ) -> Self {
+        Message {
+            role: Role::Assistant,
+            content: content.map(|c| c.into()),
+            thinking_content: thinking_content.map(|c| c.into()),
+            tool_calls: Some(calls),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(
+        id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Message {
+            role: Role::Tool,
+            content: Some(content.into()),
+            thinking_content: None,
+            tool_calls: None,
+            tool_call_id: Some(id.into()),
+        }
+    }
+
+    pub fn content_str(&self) -> &str {
+        self.content.as_deref().unwrap_or("")
+    }
 }
 
-#[derive(Debug, Clone)]
-pub struct Transcript(Vec<TranscriptItem>);
-
-impl Transcript {
-    pub fn new() -> Self {
-        Transcript(Vec::new())
-    }
-
-    pub fn add_item(&mut self, item: TranscriptItem) {
-        self.0.push(item);
-    }
-
-    pub fn items(&self) -> Vec<TranscriptItem> {
-        self.0.clone()
-    }
-}
-
-impl Default for Transcript {
-    fn default() -> Self {
-        Transcript::new()
-    }
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub reasoning_tokens: usize,
+    pub prompt_processing_ms: u64,
+    pub generation_ms: u64,
 }

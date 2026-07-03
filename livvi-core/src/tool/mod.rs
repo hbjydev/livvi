@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::model;
+use crate::{context, model};
 
 pub use livvi_core_macros::tool;
 
@@ -61,7 +61,7 @@ impl From<anyhow::Error> for ToolExtractError {
 /// provided by the user when the agent is constructed.
 pub struct ToolContext<'a, S> {
     /// The current conversation transcript.
-    pub transcript: &'a model::Transcript,
+    pub agent_context: &'a context::Context,
 
     /// The provider-supplied ID for this tool call.
     pub tool_call_id: &'a str,
@@ -127,14 +127,14 @@ where
 }
 
 /// Extracts a reference to the current conversation transcript.
-pub struct Transcript<'a>(pub &'a model::Transcript);
+pub struct Context<'a>(pub &'a context::Context);
 
-impl<'a, S> FromToolContext<'a, S> for Transcript<'a> {
+impl<'a, S> FromToolContext<'a, S> for Context<'a> {
     fn from_tool_context(
         ctx: &'a ToolContext<'a, S>,
         _args: &'a Value,
     ) -> Result<Self, ToolExtractError> {
-        Ok(Transcript(ctx.transcript))
+        Ok(Context(ctx.agent_context))
     }
 }
 
@@ -199,29 +199,29 @@ pub trait ToolHandler<S: Send + Sync + 'static>: Send + Sync + 'static {
 }
 
 /// A registry of tools, parameterised by the application state type.
-pub struct Tools<S: Send + Sync + 'static> {
+pub struct Toolbox<S: Send + Sync + 'static> {
     tools: HashMap<String, Arc<dyn ToolHandler<S>>>,
 }
 
-impl<S: Send + Sync + 'static> Clone for Tools<S> {
+impl<S: Send + Sync + 'static> Clone for Toolbox<S> {
     fn clone(&self) -> Self {
-        Tools {
+        Toolbox {
             tools: self.tools.clone(),
         }
     }
 }
 
-impl<S: Send + Sync + 'static> Tools<S> {
+impl<S: Send + Sync + 'static> Toolbox<S> {
     /// Create an empty tool registry.
     pub fn new() -> Self {
-        Tools {
+        Toolbox {
             tools: HashMap::new(),
         }
     }
 
     /// The schemas of all registered tools, suitable for passing to a provider.
-    pub fn schemas(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|tool| tool.schema()).collect()
+    pub fn schemas(&self) -> HashMap<String, ToolDefinition> {
+        self.tools.iter().map(|(tool_name, tool)| (tool_name.clone(), tool.schema())).collect()
     }
 
     /// Add a tool to the registry.
@@ -244,8 +244,8 @@ impl<S: Send + Sync + 'static> Tools<S> {
     }
 }
 
-impl<S: Send + Sync + 'static> Default for Tools<S> {
+impl<S: Send + Sync + 'static> Default for Toolbox<S> {
     fn default() -> Self {
-        Tools::new()
+        Toolbox::new()
     }
 }
