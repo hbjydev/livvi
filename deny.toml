@@ -1,5 +1,14 @@
 [advisories]
-ignore = []
+ignore = [
+    # serenity 0.12's rustls_backend pulls rustls 0.22 / rustls-webpki 0.102.8,
+    # which has these CRL/name-constraint advisories. They only affect CRL
+    # parsing and name constraints, and serenity's Discord gateway does not
+    # configure custom CRLs or name constraints. Accept until serenity updates.
+    "RUSTSEC-2026-0049",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
 
 [licenses]
 allow = [

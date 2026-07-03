@@ -9,6 +9,9 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+livvi-core.workspace = true
+livvi-discord.workspace = true
+livvi-openai.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

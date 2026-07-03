@@ -8,3 +8,10 @@ exclude.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+livvi-core.workspace = true
+serde.workspace = true
+schemars.workspace = true
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+tokio.workspace = true
+tracing.workspace = true

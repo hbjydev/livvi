@@ -1,14 +1,91 @@
+use std::env;
+
 use anyhow::Result;
+use livvi_core::{agent::Agent, interrupt::Interrupt, tool::Toolbox};
+use livvi_discord::DiscordTransport;
+use livvi_openai::OpenAIProvider;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    tracing::info!("Starting Livvi...");
+    info!("Starting Livvi...");
+
+    let discord_token = env::var("LIVVI_DISCORD_TOKEN")
+        .or_else(|_| env::var("DISCORD_TOKEN"))
+        .ok();
+
+    let openai_api_key = env::var("LIVVI_OPENAI_API_KEY").ok();
+    let openai_model =
+        env::var("LIVVI_OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let openai_base_url = env::var("LIVVI_OPENAI_API_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+
+    // Without a Discord token there is no way to feed the agent loop, so just
+    // wait for a shutdown signal.
+    let discord_token = match discord_token {
+        Some(token) => token,
+        None => {
+            warn!(
+                "No Discord token configured (LIVVI_DISCORD_TOKEN or DISCORD_TOKEN); \
+                 waiting for shutdown signal..."
+            );
+            shutdown_signal().await;
+            return Ok(());
+        }
+    };
+
+    let (interrupt_tx, interrupt_rx) = mpsc::channel::<Interrupt>(256);
+
+    let transport = DiscordTransport::new(&discord_token, interrupt_tx).await?;
+
+    let provider: Box<dyn livvi_core::provider::Provider> = match openai_api_key {
+        Some(key) => Box::new(OpenAIProvider::new(&key, &openai_base_url, &openai_model)?),
+        None => {
+            warn!("LIVVI_OPENAI_API_KEY not set; using mock provider");
+            Box::new(livvi_core::provider::MockProvider::new(vec![]))
+        }
+    };
+
+    let (mut agent_events, agent) = Agent::builder()
+        .with_provider(provider)
+        .with_state(())
+        .with_toolbox(Toolbox::new())
+        .with_input(interrupt_rx)
+        .build()?;
+
+    let agent_handle = tokio::spawn(async move {
+        if let Err(e) = agent.run().await {
+            tracing::error!("agent loop error: {e}");
+        }
+    });
+
+    let event_logger = tokio::spawn(async move {
+        while let Ok(event) = agent_events.recv().await {
+            tracing::debug!(?event, "agent event");
+        }
+    });
+
+    let mut discord_handle = tokio::spawn(async move {
+        if let Err(e) = transport.run().await {
+            tracing::error!("Discord transport error: {e}");
+        }
+    });
 
     tokio::select! {
         _ = shutdown_signal() => {
-            tracing::info!("Shutdown signal received, terminating...");
+            info!("Shutdown signal received, terminating...");
+        }
+        _ = agent_handle => {
+            warn!("agent loop exited");
+        }
+        _ = event_logger => {
+            warn!("agent event logger exited");
+        }
+        _ = &mut discord_handle => {
+            warn!("Discord transport exited");
         }
     }
 
@@ -31,5 +108,10 @@ async fn shutdown_signal() {
                 }
             } => {}
         }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
