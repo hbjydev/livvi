@@ -1,5 +1,6 @@
 use crate::model::{Message, Usage};
 
+#[derive(Debug, Clone)]
 /// Context holds the conversation context for an agent, including the system
 /// message (soul), the turns of the conversation, and usage statistics.
 pub struct Context {

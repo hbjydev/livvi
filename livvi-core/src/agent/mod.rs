@@ -3,7 +3,11 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::{AgentEvent, interrupt::Interrupt, tool::Toolbox};
+use crate::{AgentEvent, context::Context, interrupt::Interrupt, tool::Toolbox};
+
+mod interrupts;
+mod tools;
+mod turns;
 
 pub struct AgentBuilder<S: Sync + Send + 'static> {
     provider: Option<Box<dyn crate::provider::Provider>>,
@@ -70,10 +74,21 @@ impl<S: Sync + Send + 'static> Agent<S> {
         AgentBuilder::new()
     }
 
-    pub async fn run(self) -> Result<()> {
-        let _ = self.output.send(AgentEvent::Started);
+    pub async fn run(mut self) -> Result<()> {
+        let mut ctx = Context::new("");
 
-        let _ = self.output.send(AgentEvent::Done);
+        tracing::info!("Agent started running, beginning loop...");
+        loop {
+            match self.input.recv().await {
+                Some(interrupt) => {
+                    self.handle_interrupt(interrupt, &mut ctx).await?;
+                }
+                None => {
+                    tracing::warn!("Agent input channel disconnected, exiting loop.");
+                    break;
+                }
+            }
+        }
 
         Ok(())
     }

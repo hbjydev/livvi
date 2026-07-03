@@ -22,12 +22,16 @@ pub struct AgentState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let state = AgentState;
     let mut tools = Toolbox::new();
     tools.add_tool(calc);
 
     let provider = MockProvider::new(vec![
-        ProviderEvent::Token("Hello, world!".to_string()),
+        ProviderEvent::Token("Hello".to_string()),
+        ProviderEvent::Token(", ".to_string()),
+        ProviderEvent::Token("world!".to_string()),
     ]);
 
     let (input_tx, input_rx) = mpsc::channel(256);
@@ -48,10 +52,43 @@ async fn main() -> Result<()> {
     let handle = tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             println!("Agent event: {:?}", event);
+
+            tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+
+            input_tx.send(livvi_core::interrupt::Interrupt::Message(
+                "Hello, world!".to_string()
+            )).await.unwrap();
         }
     });
 
-    let _ = agent.run().await?;
-    let _ = handle.await?;
+    tokio::select! {
+        _ = shutdown_signal() => {
+            tracing::info!("Shutdown signal received, terminating...");
+        }
+        _ = async {
+            let _ = agent.run().await.unwrap();
+            let _ = handle.await.unwrap();
+        } => {}
+    }
+
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async {
+                if let Some(sigterm) = sigterm.as_mut() {
+                    sigterm.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {}
+        }
+    }
 }
