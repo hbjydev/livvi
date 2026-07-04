@@ -1,0 +1,1 @@
+ALTER TABLE persons ADD COLUMN also_known_as TEXT NOT NULL DEFAULT '';

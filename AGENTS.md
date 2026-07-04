@@ -23,6 +23,7 @@ livvi-core/        The core logic & interfaces crate
 livvi-core-macros/ Proc-macro helpers for livvi-core (e.g. the #[tool] attribute macro)
 livvi-discord/     The Discord transport implementation
 livvi-openai/      The OpenAI LLM provider implementation
+livvi-store/       Backend-agnostic persistent storage (persons, conversations, etc.)
 livvi-daemon/      The shipped binary, which runs the various components of Livvi
                    (provider, agent loop from livvi-core, etc)
 ```
@@ -33,7 +34,11 @@ livvi-daemon/      The shipped binary, which runs the various components of Livv
 | --------- | ---------------------------------------------------------------------------------------------------- |
 | Tools     | Implemented as async functions with a `#[tool]` attribute macro and Axum-style extractors (`Input<T>`, `State<T>`, etc) |
 | Providers | Implemented as traits, to allow ease of implementation & maintenance                                   |
+| Storage   | Backend-agnostic repository traits in `livvi-store`, with SQLite as the first implementation         |
 
+## Subsystem documentation
+
+- [`docs/agents/livvi-store.md`](docs/agents/livvi-store.md) — how to work with Livvi's persistent storage layer.
 
 ## Build/test/verify
 

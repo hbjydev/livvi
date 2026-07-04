@@ -12,7 +12,7 @@ rust = { version = "1.96.0", components = "rustfmt,clippy,llvm-tools-preview" }
 
 [tasks.build]
 description = "Compile the whole workspace (debug, locked deps)"
-run = "cargo build --workspace --locked"
+run = "cargo build --workspace --locked --all-features"
 
 [tasks.build-release]
 description = "Compile the release binaries we ship (daemon)"
@@ -24,11 +24,11 @@ run = "rustup component add rustfmt clippy llvm-tools-preview"
 
 [tasks.test]
 description = "Hermetic test suite: unit + serde + validation (no cluster, no network)"
-run = "cargo test --workspace --locked"
+run = "cargo test --workspace --locked --all-features"
 
 [tasks.clippy]
 description = "Clippy across the workspace, warnings are errors"
-run = "cargo clippy --workspace --all-targets -- -D warnings"
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 
 [tasks.fmt]
 description = "Format the workspace in place"
@@ -40,15 +40,15 @@ run = "cargo fmt --all -- --check"
 
 [tasks.cov]
 description = "Coverage over the hermetic suite -> lcov.info (report-only; no threshold)"
-run = "cargo llvm-cov --workspace --locked --lcov --output-path lcov.info"
+run = "cargo llvm-cov --workspace --locked --all-features --lcov --output-path lcov.info"
 
 [tasks.cov-html]
 description = "Coverage as a browsable HTML report under target/llvm-cov/html"
-run = "cargo llvm-cov --workspace --locked --html"
+run = "cargo llvm-cov --workspace --locked --all-features --html"
 
 [tasks.cov-summary]
 description = "Coverage summary printed to the terminal"
-run = "cargo llvm-cov --workspace --locked --summary-only"
+run = "cargo llvm-cov --workspace --locked --all-features --summary-only"
 
 [tasks.audit]
 description = "Supply-chain + license audit"
