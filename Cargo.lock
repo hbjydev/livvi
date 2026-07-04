@@ -1218,6 +1218,7 @@ dependencies = [
  "jsonschema",
  "livvi-core-macros",
  "livvi-store",
+ "parking_lot",
  "schemars",
  "serde",
  "serde_json",

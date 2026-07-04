@@ -100,6 +100,16 @@ impl Context {
         self.usage.reasoning_tokens += usage.reasoning_tokens;
         self.usage.generation_ms += usage.generation_ms;
     }
+
+    /// Compact the conversation history using the provided compactor.
+    ///
+    /// The compactor receives the current turns and returns a new set of turns
+    /// that usually begins with a summary of older messages followed by the most
+    /// recent turns kept verbatim. If compaction is not needed, the compactor
+    /// may return the turns unchanged.
+    pub fn compact(&mut self, compactor: &dyn crate::compaction::Compactor) {
+        self.turns = compactor.compact(&self.turns);
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +145,27 @@ mod tests {
         let msg = &ctx.system[0];
         assert_eq!(msg.role, crate::model::Role::System);
         assert_eq!(msg.content.as_deref(), Some("This is the new soul"));
+    }
+
+    #[test]
+    fn test_compact_replaces_old_turns_with_summary() {
+        let compactor = crate::compaction::WindowCompactor {
+            keep_ratio: 0.2,
+            min_keep: 2,
+            trigger_threshold: 5,
+            max_chars_per_turn: 50,
+        };
+        let mut ctx = Context::new("soul");
+        for i in 0..8 {
+            ctx.push_assistant(format!("assistant {i}"), None);
+            ctx.push_user(format!("user {i}"), None);
+        }
+        // 16 turns > threshold of 5, so compaction should fire.
+        ctx.compact(&compactor);
+
+        // 1 summary + ceil(16 * 0.2)=4 kept turns = 5 turns.
+        assert_eq!(ctx.turns.len(), 5);
+        assert_eq!(ctx.turns[0].role, crate::model::Role::System);
+        assert_eq!(ctx.turns[1].content.as_deref(), Some("assistant 6"));
     }
 }

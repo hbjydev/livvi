@@ -46,6 +46,8 @@ impl<S: Sync + Send + 'static> Agent<S> {
             context.push_user(event.to_xml_message(), event.person_id.clone());
         }
 
+        context.compact(&*self.compactor);
+
         loop {
             let StreamIteration {
                 response: iteration_response,

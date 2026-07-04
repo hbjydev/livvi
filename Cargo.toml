@@ -30,6 +30,7 @@ mpsc = "0.3"
 reqwest = "0.12"
 
 openai-api-rs = "10.0.1"
+parking_lot = "0.12"
 
 livvi-core = { path = "livvi-core" }
 livvi-core-macros = { path = "livvi-core-macros" }

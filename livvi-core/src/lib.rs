@@ -8,6 +8,7 @@ pub mod agent;
 pub mod provider;
 pub mod tool;
 
+pub mod compaction;
 pub mod context;
 pub mod interrupt;
 pub mod model;

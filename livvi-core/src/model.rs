@@ -47,7 +47,7 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub person_id: Option<PersonId>,
