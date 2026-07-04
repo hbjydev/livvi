@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     };
 
     let database_url =
-        env::var("LIVVI_DATABASE_URL").unwrap_or_else(|_| "sqlite:livvi.db".to_string());
+        env::var("LIVVI_DATABASE_URL").unwrap_or_else(|_| "sqlite:livvi.db?mode=rwc".to_string());
     let store = LivviSqliteStore::connect(&database_url).await?;
 
     let (raw_tx, mut raw_rx) = mpsc::channel::<Interrupt>(256);
