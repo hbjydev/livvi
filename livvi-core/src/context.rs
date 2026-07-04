@@ -1,4 +1,5 @@
 use crate::model::{Message, ToolCall, Usage};
+use livvi_store::PersonId;
 
 #[derive(Debug, Clone)]
 /// Context holds the conversation context for an agent, including the system
@@ -50,8 +51,8 @@ impl Context {
     }
 
     /// Push an input (user) message to the context.
-    pub fn push_user(&mut self, content: impl Into<String>) {
-        self.turns.push(Message::user(content))
+    pub fn push_user(&mut self, content: impl Into<String>, person_id: Option<PersonId>) {
+        self.turns.push(Message::user(content, person_id))
     }
 
     /// Push an output (assistant) message to the context, optionally with

@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use livvi_store::{ConversationId, PersonId};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ pub struct ToolResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
+    pub person_id: Option<PersonId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,26 +59,32 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<ConversationId>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
         Message {
             role: Role::System,
+            person_id: None,
             content: Some(content.into()),
             thinking_content: None,
             tool_calls: None,
             tool_call_id: None,
+            conversation_id: None,
         }
     }
 
-    pub fn user(content: impl Into<String>) -> Self {
+    pub fn user(content: impl Into<String>, person_id: Option<PersonId>) -> Self {
         Message {
             role: Role::User,
+            person_id,
             content: Some(content.into()),
             thinking_content: None,
             tool_calls: None,
             tool_call_id: None,
+            conversation_id: None,
         }
     }
 
@@ -85,10 +94,12 @@ impl Message {
     ) -> Self {
         Message {
             role: Role::Assistant,
+            person_id: None,
             content: Some(content.into()),
             thinking_content: thinking_content.map(|c| c.into()),
             tool_calls: None,
             tool_call_id: None,
+            conversation_id: None,
         }
     }
 
@@ -99,20 +110,24 @@ impl Message {
     ) -> Self {
         Message {
             role: Role::Assistant,
+            person_id: None,
             content: content.map(|c| c.into()),
             thinking_content: thinking_content.map(|c| c.into()),
             tool_calls: Some(calls),
             tool_call_id: None,
+            conversation_id: None,
         }
     }
 
     pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
         Message {
             role: Role::Tool,
+            person_id: None,
             content: Some(content.into()),
             thinking_content: None,
             tool_calls: None,
             tool_call_id: Some(id.into()),
+            conversation_id: None,
         }
     }
 

@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn into_openai_user_message_is_not_empty() {
-        let msg = Message::user("Hello, world!");
+        let msg = Message::user("Hello, world!", None);
         let messages = into_openai_chat_completion(msg);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::user);
@@ -470,7 +470,7 @@ mod tests {
     fn messages_round_trip_to_chat_format() {
         let messages = vec![
             Message::system("Be helpful."),
-            Message::user("What's 2+2?"),
+            Message::user("What's 2+2?", None),
             Message::with_tool_calls(
                 vec![ToolCall {
                     name: "calc".to_string(),

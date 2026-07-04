@@ -31,7 +31,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         info!("Running turn with interrupt: {:?}", interrupt);
         let _ = self.output.send(AgentEvent::Started);
 
-        if !matches!(interrupt, Interrupt::Message(..)) {
+        if !matches!(interrupt, Interrupt::ExternalEvent(..)) {
             let msg = format!("Unsupported interrupt type: {:?}", interrupt);
             tracing::error!(%msg);
             let _ = self.output.send(AgentEvent::Error(msg.clone()));
@@ -41,8 +41,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
             return Ok(Some(interrupt));
         }
 
-        let Interrupt::Message(message) = &interrupt;
-        context.push_user(message);
+        let Interrupt::ExternalEvent(event) = &interrupt;
+        if event.content.is_some() {
+            context.push_user(event.to_xml_message(), event.person_id.clone());
+        }
 
         loop {
             let StreamIteration {

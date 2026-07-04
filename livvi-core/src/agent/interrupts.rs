@@ -12,7 +12,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         tracing::info!("Handling interrupt: {:?}", interrupt);
 
         match interrupt {
-            Interrupt::Message(..) => self.handle_input_interrupt(interrupt, context).await?,
+            Interrupt::ExternalEvent(..) => self.handle_input_interrupt(interrupt, context).await?,
         }
 
         Ok(())

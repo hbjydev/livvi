@@ -48,9 +48,7 @@ async fn main() -> Result<()> {
         .build()?;
 
     input_tx
-        .send(livvi_core::interrupt::Interrupt::Message(
-            "Hello, world!".to_string(),
-        ))
+        .send(livvi_core::interrupt::Interrupt::message("Hello, world!"))
         .await?;
 
     let handle = tokio::spawn(async move {
@@ -62,9 +60,7 @@ async fn main() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
             input_tx
-                .send(livvi_core::interrupt::Interrupt::Message(
-                    "Hello, world!".to_string(),
-                ))
+                .send(livvi_core::interrupt::Interrupt::message("Hello, world!"))
                 .await
                 .unwrap();
         }

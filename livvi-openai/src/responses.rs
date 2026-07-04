@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn into_openai_user_message_is_not_empty() {
-        let msg = Message::user("Hello, world!");
+        let msg = Message::user("Hello, world!", None);
         let items = into_openai(msg).unwrap();
         assert_eq!(
             items,

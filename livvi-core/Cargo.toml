@@ -11,13 +11,15 @@ authors.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-tracing.workspace = true
-schemars.workspace = true
+livvi-core-macros = { path = "../livvi-core-macros" }
+livvi-store.workspace = true
 jsonschema.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 tokio.workspace = true
-livvi-core-macros = { path = "../livvi-core-macros" }
+tracing.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
