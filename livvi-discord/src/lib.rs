@@ -35,26 +35,36 @@ impl EventHandler for Handler {
             .and_then(|m| m.nick.clone())
             .unwrap_or_else(|| msg.author.name.clone());
 
-        if let Err(e) = self
-            .interrupt_tx
-            .send(
-                Interrupt::Message(
-                    format!(
-                        r#"
-<external_event source="discord" author_id="{}" author_name="{}" channel_id="{}" guild_id="{}" message_id="{}" is_dm="{}">{}</external_event>
-                        "#,
-                        msg.author.id,
-                        display_name,
-                        msg.channel_id,
-                        msg.guild_id.unwrap_or_default(),
-                        msg.id,
-                        msg.guild_id.is_none(),
-                        msg.content,
-                    )
-                )
-            )
-            .await
-        {
+        let event = Interrupt::external_event(livvi_core::interrupt::ExternalEvent {
+            transport_kind: "discord".to_string(),
+            event_type: "message".to_string(),
+            content: Some(msg.content),
+            author: livvi_core::interrupt::ExternalAuthor {
+                transport_kind: "discord".to_string(),
+                transport_id: msg.author.id.to_string(),
+                display_name: Some(display_name),
+                metadata: serde_json::json!({
+                    "author_name": msg.author.name,
+                    "discriminator": msg.author.discriminator,
+                }),
+            },
+            conversation: livvi_core::interrupt::ExternalConversation {
+                transport_kind: "discord".to_string(),
+                transport_id: msg.channel_id.to_string(),
+                display_name: None,
+                metadata: serde_json::json!({
+                    "guild_id": msg.guild_id.map(|g| g.to_string()),
+                    "is_dm": msg.guild_id.is_none(),
+                    "message_id": msg.id.to_string(),
+                }),
+            },
+            person_id: None,
+            conversation_id: None,
+            metadata: serde_json::json!({}),
+            timestamp: Some(time::OffsetDateTime::now_utc()),
+        });
+
+        if let Err(e) = self.interrupt_tx.send(event).await {
             error!(error = %e, "failed to forward Discord message to agent loop");
         }
     }
@@ -65,7 +75,7 @@ impl EventHandler for Handler {
 }
 
 /// A Discord transport that forwards every user message it sees into the
-/// Livvi agent loop as an [`Interrupt::Message`].
+/// Livvi agent loop as an [`Interrupt::ExternalEvent`].
 ///
 /// Create one with [`DiscordTransport::new`], then call [`DiscordTransport::run`]
 /// to start the gateway connection. The future resolves only when the gateway

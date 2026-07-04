@@ -11,7 +11,9 @@ authors.workspace = true
 anyhow.workspace = true
 livvi-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 schemars.workspace = true
 serenity = { version = "0.12", default-features = false, features = ["builder", "client", "gateway", "model", "rustls_backend"] }
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true

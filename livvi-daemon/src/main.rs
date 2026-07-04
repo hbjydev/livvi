@@ -1,15 +1,17 @@
+use anyhow::Result;
+use livvi_core::{
+    agent::Agent,
+    interrupt::{ExternalEvent, Interrupt},
+    tool::Toolbox,
+};
+use livvi_discord::tools::discord_send;
+use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
+use livvi_openai::OpenAIChatCompletionsProvider;
+use livvi_store::{LivviSqliteStore, LivviStore};
 use std::env;
 use std::sync::Arc;
-
-use anyhow::Result;
-use livvi_core::{agent::Agent, interrupt::Interrupt, tool::Toolbox};
-use livvi_discord::DISCORD_INSTRUCTIONS;
-use livvi_discord::DiscordState;
-use livvi_discord::DiscordTransport;
-use livvi_discord::tools::discord_send;
-use livvi_openai::OpenAIChatCompletionsProvider;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,20 +43,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (interrupt_tx, interrupt_rx) = mpsc::channel::<Interrupt>(256);
+    let database_url =
+        env::var("LIVVI_DATABASE_URL").unwrap_or_else(|_| "sqlite:livvi.db".to_string());
+    let store = LivviSqliteStore::connect(&database_url).await?;
+
+    let (raw_tx, mut raw_rx) = mpsc::channel::<Interrupt>(256);
+    let (resolved_tx, resolved_rx) = mpsc::channel::<Interrupt>(256);
 
     let discord_state = Arc::new(DiscordState::new(&discord_token));
-    let transport = DiscordTransport::new(&discord_token, interrupt_tx).await?;
+    let transport = DiscordTransport::new(&discord_token, raw_tx).await?;
 
     let provider: Box<dyn livvi_core::provider::Provider> = match openai_api_key {
-        Some(key) => Box::new(OpenAIChatCompletionsProvider::new(&key, &openai_base_url, &openai_model)?),
+        Some(key) => Box::new(OpenAIChatCompletionsProvider::new(
+            &key,
+            &openai_base_url,
+            &openai_model,
+        )?),
         None => {
             warn!("LIVVI_OPENAI_API_KEY not set; using mock provider");
             Box::new(livvi_core::provider::MockProvider::new(vec![]))
         }
     };
 
-    let (mut agent_events, agent) = Agent::builder()
+    let (_agent_events, agent) = Agent::builder()
         .with_provider(provider)
         .with_state(Arc::clone(&discord_state))
         .with_toolbox({
@@ -63,12 +74,26 @@ async fn main() -> Result<()> {
             toolbox
         })
         .with_soul(DISCORD_INSTRUCTIONS.to_string())
-        .with_input(interrupt_rx)
+        .with_input(resolved_rx)
         .build()?;
 
     let agent_handle = tokio::spawn(async move {
         if let Err(e) = agent.run().await {
             tracing::error!("agent loop error: {e}");
+        }
+    });
+
+    let resolver_handle = tokio::spawn(async move {
+        while let Some(interrupt) = raw_rx.recv().await {
+            match resolve_interrupt(interrupt, &store).await {
+                Ok(Some(resolved)) => {
+                    if resolved_tx.send(resolved).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => error!("failed to resolve interrupt: {e}"),
+            }
         }
     });
 
@@ -85,12 +110,61 @@ async fn main() -> Result<()> {
         _ = agent_handle => {
             warn!("agent loop exited");
         }
+        _ = resolver_handle => {
+            warn!("event resolver exited");
+        }
         _ = &mut discord_handle => {
             warn!("Discord transport exited");
         }
     }
 
     Ok(())
+}
+
+async fn resolve_interrupt(
+    interrupt: Interrupt,
+    store: &impl LivviStore,
+) -> Result<Option<Interrupt>> {
+    let Interrupt::ExternalEvent(event) = interrupt;
+
+    let resolved = resolve_external_event(event, store).await?;
+    Ok(Some(Interrupt::external_event(resolved)))
+}
+
+async fn resolve_external_event(
+    mut event: ExternalEvent,
+    store: &impl LivviStore,
+) -> Result<ExternalEvent> {
+    let person = store
+        .ensure_identity(
+            &event.author.transport_kind,
+            &event.author.transport_id,
+            event.author.display_name.clone(),
+            event.author.metadata.clone(),
+        )
+        .await?;
+
+    if let Some(name) = &event.author.display_name
+        && person.display_name.as_ref() != Some(name)
+    {
+        store.add_also_known_as(&person.id, name.clone()).await?;
+    }
+
+    let conversation = store
+        .ensure_conversation(
+            &event.conversation.transport_kind,
+            &event.conversation.transport_id,
+            event.conversation.display_name.clone(),
+            event.conversation.metadata.clone(),
+        )
+        .await?;
+
+    store.add_participant(&conversation.id, &person.id).await?;
+
+    event.person_id = Some(person.id);
+    event.conversation_id = Some(conversation.id);
+
+    Ok(event)
 }
 
 async fn shutdown_signal() {
@@ -114,5 +188,107 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use livvi_core::interrupt::{ExternalAuthor, ExternalConversation, ExternalEvent};
+    use livvi_store::{ConversationStorage, MockStore, PersonStorage};
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn resolver_creates_person_and_conversation() {
+        let store = MockStore::new();
+
+        let event = ExternalEvent {
+            transport_kind: "discord".to_string(),
+            event_type: "message".to_string(),
+            content: Some("hello".to_string()),
+            author: ExternalAuthor {
+                transport_kind: "discord".to_string(),
+                transport_id: "12345".to_string(),
+                display_name: Some("hayden".to_string()),
+                metadata: json!({ "discriminator": "0001" }),
+            },
+            conversation: ExternalConversation {
+                transport_kind: "discord".to_string(),
+                transport_id: "chan-1".to_string(),
+                display_name: Some("general".to_string()),
+                metadata: json!({ "guild_id": "111", "is_dm": false }),
+            },
+            person_id: None,
+            conversation_id: None,
+            metadata: json!({}),
+            timestamp: None,
+        };
+
+        let resolved = resolve_external_event(event, &store).await.unwrap();
+
+        assert!(resolved.person_id.is_some());
+        assert!(resolved.conversation_id.is_some());
+
+        let person = store
+            .get_person(resolved.person_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(person.display_name, Some("hayden".to_string()));
+
+        let participants = store
+            .get_participants(resolved.conversation_id.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(participants.len(), 1);
+        assert_eq!(participants[0].id, resolved.person_id.unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolver_adds_alias_when_display_name_differs() {
+        let store = MockStore::new();
+
+        let first = ExternalEvent {
+            transport_kind: "discord".to_string(),
+            event_type: "message".to_string(),
+            content: Some("hello".to_string()),
+            author: ExternalAuthor {
+                transport_kind: "discord".to_string(),
+                transport_id: "12345".to_string(),
+                display_name: Some("hayden".to_string()),
+                metadata: json!({}),
+            },
+            conversation: ExternalConversation {
+                transport_kind: "discord".to_string(),
+                transport_id: "chan-1".to_string(),
+                display_name: None,
+                metadata: json!({}),
+            },
+            person_id: None,
+            conversation_id: None,
+            metadata: json!({}),
+            timestamp: None,
+        };
+
+        let _ = resolve_external_event(first.clone(), &store).await.unwrap();
+
+        let second = ExternalEvent {
+            author: ExternalAuthor {
+                display_name: Some("hayden2".to_string()),
+                ..first.author.clone()
+            },
+            ..first.clone()
+        };
+
+        let resolved = resolve_external_event(second, &store).await.unwrap();
+
+        let person = store
+            .get_person(resolved.person_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(person.display_name, Some("hayden".to_string()));
+        assert_eq!(person.also_known_as, vec!["hayden2".to_string()]);
     }
 }
