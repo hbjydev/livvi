@@ -1,4 +1,5 @@
 use anyhow::Result;
+use livvi_store::ConversationId;
 
 use crate::{agent::Agent, context::Context, interrupt::Interrupt};
 
@@ -8,14 +9,16 @@ impl<S: Sync + Send + 'static> Agent<S> {
         &mut self,
         interrupt: Interrupt,
         context: &mut Context,
-    ) -> Result<()> {
+        conversation_id: &ConversationId,
+    ) -> Result<Option<Interrupt>> {
         tracing::info!("Handling interrupt: {:?}", interrupt);
 
         match interrupt {
-            Interrupt::ExternalEvent(..) => self.handle_input_interrupt(interrupt, context).await?,
+            Interrupt::ExternalEvent(..) => {
+                self.handle_input_interrupt(interrupt, context, conversation_id)
+                    .await
+            }
         }
-
-        Ok(())
     }
 
     #[tracing::instrument(skip(self, context))]
@@ -23,9 +26,9 @@ impl<S: Sync + Send + 'static> Agent<S> {
         &mut self,
         interrupt: Interrupt,
         context: &mut Context,
-    ) -> Result<()> {
+        conversation_id: &ConversationId,
+    ) -> Result<Option<Interrupt>> {
         tracing::info!("Handling input interrupt: {:?}", interrupt);
-        self.run_turn(interrupt, context).await?;
-        Ok(())
+        self.run_turn(interrupt, context, conversation_id).await
     }
 }

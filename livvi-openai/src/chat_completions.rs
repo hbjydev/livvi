@@ -7,6 +7,7 @@ use futures::stream::{self, BoxStream, StreamExt};
 use livvi_core::{
     model::{Message, Role, ToolCall, Usage},
     provider::{Provider, ProviderEvent},
+    summarizer::Summarizer,
     tool::ToolDefinition,
 };
 use openai_api_rs::v1::chat_completion::{ChatCompletionMessage, Content, MessageRole};
@@ -117,6 +118,19 @@ impl Provider for OpenAIChatCompletionsProvider {
                                     .and_then(|d| d.reasoning_tokens)
                                     .unwrap_or(0)
                                     as usize,
+                                cached_tokens: usage
+                                    .prompt_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.cached_tokens)
+                                    .unwrap_or(0)
+                                    as usize,
+                                uncached_tokens: (usage.prompt_tokens
+                                    - usage
+                                        .prompt_tokens_details
+                                        .as_ref()
+                                        .and_then(|d| d.cached_tokens)
+                                        .unwrap_or(0))
+                                    as usize,
                                 prompt_processing_ms: 0,
                                 generation_ms: 0,
                             }))
@@ -192,6 +206,59 @@ impl Provider for OpenAIChatCompletionsProvider {
     }
 }
 
+#[async_trait]
+impl Summarizer for OpenAIChatCompletionsProvider {
+    async fn summarize(&self, prompt: Vec<Message>) -> Result<String> {
+        let chat_messages: Vec<ChatCompletionMessage> = prompt
+            .into_iter()
+            .flat_map(into_openai_chat_completion)
+            .collect();
+
+        let body = ChatCompletionRequestBody {
+            model: self.model_name.clone(),
+            messages: chat_messages,
+            tools: None,
+            stream: false,
+            stream_options: None,
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.api_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send summarization request: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "Summarization request failed ({}): {}",
+                status,
+                text
+            ));
+        }
+
+        let result: ChatCompletionResponse = response
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse summarization response: {}", e))?;
+
+        let content = result
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or_else(|| "(no summary)".to_string());
+
+        Ok(content)
+    }
+}
+
 #[derive(Serialize)]
 struct ChatCompletionRequestBody {
     model: String,
@@ -244,11 +311,33 @@ struct ChatCompletionChunkUsage {
     completion_tokens: i64,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CompletionTokensDetails {
     reasoning_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatCompletionResponseChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponseChoice {
+    message: ChatCompletionResponseMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponseMessage {
+    content: Option<String>,
 }
 
 #[derive(Debug, Default)]

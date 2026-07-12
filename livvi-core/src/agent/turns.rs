@@ -23,6 +23,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         &mut self,
         interrupt: Interrupt,
         context: &mut Context,
+        conversation_id: &livvi_store::ConversationId,
     ) -> Result<Option<Interrupt>> {
         let mut tool_iterations = 0usize;
         const MAX_TOOL_ITERATIONS: usize = 20;
@@ -46,7 +47,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
             context.push_user(event.to_xml_message(), event.person_id.clone());
         }
 
-        context.compact(&*self.compactor);
+        context.compact(&*self.compactor, conversation_id).await;
 
         loop {
             let StreamIteration {
@@ -159,18 +160,18 @@ impl<S: Sync + Send + 'static> Agent<S> {
         let mut thinking = String::new();
         let mut tool_calls = vec![];
         let cancelled_by = None;
+        let mut listening_for_interrupts = true;
 
         loop {
             tokio::select! {
-                biased;
-
-                interrupt = self.input.recv() => {
+                interrupt = self.input.recv(), if listening_for_interrupts => {
                     if let Some(int) = interrupt {
                         // stash for after turn
                         if stashed_interrupt.is_none() {
                             *stashed_interrupt = Some(int);
                         }
                     }
+                    listening_for_interrupts = false;
                 }
 
                 ev = tok_rx.recv() => {

@@ -1,11 +1,14 @@
 use anyhow::Result;
 use livvi_core::{
     agent::Agent,
+    compaction::WindowCompactor,
     interrupt::{ExternalEvent, Interrupt},
+    summarizer::Summarizer,
     tool::Toolbox,
 };
 use livvi_discord::tools::{discord_react, discord_send};
 use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
+use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
 use std::env;
@@ -53,15 +56,31 @@ async fn main() -> Result<()> {
     let discord_state = Arc::new(DiscordState::new(&discord_token));
     let transport = DiscordTransport::new(&discord_token, raw_tx).await?;
 
-    let provider: Box<dyn livvi_core::provider::Provider> = match openai_api_key {
-        Some(key) => Box::new(OpenAIChatCompletionsProvider::new(
-            &key,
-            &openai_base_url,
-            &openai_model,
-        )?),
+    let (provider, compactor): (
+        Box<dyn livvi_core::provider::Provider>,
+        Box<dyn livvi_core::compaction::Compactor>,
+    ) = match openai_api_key {
+        Some(key) => {
+            let provider =
+                OpenAIChatCompletionsProvider::new(&key, &openai_base_url, &openai_model)?;
+            let compactor: Box<dyn livvi_core::compaction::Compactor> =
+                if env::var("LIVVI_LCM_ENABLE").is_ok() {
+                    let lcm_database_url = env::var("LIVVI_LCM_DATABASE_URL")
+                        .unwrap_or_else(|_| "sqlite:lcm.db?mode=rwc".to_string());
+                    let store = Arc::new(LcmSqliteStore::connect(&lcm_database_url).await?);
+                    let summarizer: Arc<dyn Summarizer> = Arc::new(provider.clone());
+                    Box::new(LcmCompactor::new(summarizer, store, LcmConfig::from_env()))
+                } else {
+                    Box::new(WindowCompactor::default())
+                };
+            (Box::new(provider), compactor)
+        }
         None => {
             warn!("LIVVI_OPENAI_API_KEY not set; using mock provider");
-            Box::new(livvi_core::provider::MockProvider::new(vec![]))
+            (
+                Box::new(livvi_core::provider::MockProvider::new(vec![])),
+                Box::new(WindowCompactor::default()),
+            )
         }
     };
 
@@ -74,10 +93,13 @@ async fn main() -> Result<()> {
             toolbox.add_tool(discord_react);
             toolbox
         })
-        .with_soul(
-            format!("{}\n\n{}", include_str!("../../SOUL.md").to_string(), DISCORD_INSTRUCTIONS.to_string())
-        )
+        .with_soul(format!(
+            "{}\n\n{}",
+            include_str!("../../SOUL.md"),
+            DISCORD_INSTRUCTIONS
+        ))
         .with_input(resolved_rx)
+        .with_compactor(compactor)
         .build()?;
 
     let agent_handle = tokio::spawn(async move {
@@ -196,11 +218,121 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use livvi_core::interrupt::{ExternalAuthor, ExternalConversation, ExternalEvent};
+    use livvi_core::{
+        agent::Agent,
+        async_trait,
+        interrupt::{ExternalAuthor, ExternalConversation, ExternalEvent, Interrupt},
+        provider::{MockProvider, ProviderEvent},
+        summarizer::Summarizer,
+        tool::Toolbox,
+    };
+    use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore, LcmStore};
     use livvi_store::{ConversationStorage, MockStore, PersonStorage};
     use serde_json::json;
+    use std::sync::Arc;
 
     use super::*;
+
+    #[derive(Clone)]
+    struct MockSummarizer;
+
+    #[async_trait]
+    impl Summarizer for MockSummarizer {
+        async fn summarize(
+            &self,
+            _prompt: Vec<livvi_core::model::Message>,
+        ) -> anyhow::Result<String> {
+            Ok("mock summary".to_string())
+        }
+    }
+
+    fn make_event(
+        content: &str,
+        conversation_id: Option<livvi_store::ConversationId>,
+    ) -> ExternalEvent {
+        ExternalEvent {
+            transport_kind: "internal".to_string(),
+            event_type: "message".to_string(),
+            content: Some(content.to_string()),
+            author: ExternalAuthor {
+                transport_kind: "internal".to_string(),
+                transport_id: "user".to_string(),
+                display_name: None,
+                metadata: json!({}),
+            },
+            conversation: ExternalConversation {
+                transport_kind: "internal".to_string(),
+                transport_id: "test".to_string(),
+                display_name: None,
+                metadata: json!({}),
+            },
+            person_id: None,
+            conversation_id,
+            metadata: json!({}),
+            timestamp: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_persists_lcm_history() {
+        let store = MockStore::new();
+        let lcm_store = Arc::new(LcmSqliteStore::connect("sqlite::memory:").await.unwrap());
+
+        let raw_event = make_event("hello", None);
+        let resolved = resolve_external_event(raw_event, &store).await.unwrap();
+        let conversation_id = resolved.conversation_id.clone().unwrap();
+
+        let provider = MockProvider::new(vec![ProviderEvent::Token("ok".to_string())]);
+        let summarizer: Arc<dyn Summarizer> = Arc::new(MockSummarizer);
+        let config = LcmConfig {
+            fresh_tail_count: 4,
+            chunk_threshold: 50,
+            condensation_count: 2,
+            max_depth: 3,
+        };
+        let compactor = LcmCompactor::new(summarizer, lcm_store.clone(), config);
+
+        let (input_tx, input_rx) = tokio::sync::mpsc::channel(16);
+        let (_rx, agent) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_state(())
+            .with_toolbox(Toolbox::new())
+            .with_soul("test soul".to_string())
+            .with_input(input_rx)
+            .with_compactor(compactor)
+            .build()
+            .unwrap();
+
+        let send_conversation_id = conversation_id.clone();
+        for i in 0..12 {
+            input_tx
+                .send(Interrupt::ExternalEvent(make_event(
+                    &format!(
+                        "user message {} with a lot of content to exceed the threshold",
+                        i
+                    ),
+                    Some(send_conversation_id.clone()),
+                )))
+                .await
+                .unwrap();
+        }
+        drop(input_tx);
+
+        agent.run().await.unwrap();
+
+        let messages = lcm_store.load_messages(&conversation_id).await.unwrap();
+        let summaries = lcm_store.load_summaries(&conversation_id).await.unwrap();
+
+        assert!(
+            messages.len() >= 12,
+            "expected at least 12 raw messages, got {}",
+            messages.len()
+        );
+        assert!(
+            !summaries.is_empty(),
+            "expected at least one persisted summary"
+        );
+    }
 
     #[tokio::test]
     async fn resolver_creates_person_and_conversation() {

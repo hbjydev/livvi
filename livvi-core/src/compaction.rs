@@ -1,19 +1,40 @@
+use anyhow::Result;
+use async_trait::async_trait;
+use livvi_store::ConversationId;
+
 use crate::model::{Message, Role};
 
 /// Strategy for compressing a long conversation history so the context window
 /// stays bounded while keeping as much useful signal as possible.
 ///
-/// A [`Compactor`] receives the full list of turns and returns a new, shorter
-/// list of turns that represents the same conversation. Implementations decide
-/// how much to keep verbatim, how much to drop, and how to summarize what is
-/// dropped.
+/// A [`Compactor`] receives the full list of turns for a specific conversation
+/// and returns a new, shorter list of turns that represents the same
+/// conversation. Implementations decide how much to keep verbatim, how much
+/// to drop, and how to summarize what is dropped.
+#[async_trait]
 pub trait Compactor: Send + Sync + 'static {
-    /// Compact `messages` into a smaller set of turns.
+    /// Compact `messages` into a smaller set of turns for `conversation_id`.
     ///
     /// The returned vector replaces the input turns entirely. The first message
     /// is typically a system-style summary of the dropped history, followed
-    /// by the most recent turns that were kept verbatim.
-    fn compact(&self, messages: &[Message]) -> Vec<Message>;
+    /// by the most recent turns that were kept verbatim. If compaction is not
+    /// needed, the compactor may return the turns unchanged.
+    async fn compact(
+        &self,
+        messages: &[Message],
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Message>>;
+}
+
+#[async_trait]
+impl Compactor for Box<dyn Compactor> {
+    async fn compact(
+        &self,
+        messages: &[Message],
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Message>> {
+        self.as_ref().compact(messages, conversation_id).await
+    }
 }
 
 /// A simple compactor that keeps the last ~20% of turns verbatim and summarizes
@@ -55,10 +76,15 @@ impl WindowCompactor {
     }
 }
 
+#[async_trait]
 impl Compactor for WindowCompactor {
-    fn compact(&self, messages: &[Message]) -> Vec<Message> {
+    async fn compact(
+        &self,
+        messages: &[Message],
+        _conversation_id: &ConversationId,
+    ) -> Result<Vec<Message>> {
         if messages.len() <= self.trigger_threshold.max(self.min_keep) {
-            return messages.to_vec();
+            return Ok(messages.to_vec());
         }
 
         let keep = ((messages.len() as f32) * self.keep_ratio)
@@ -68,14 +94,14 @@ impl Compactor for WindowCompactor {
 
         let summary_len = messages.len().saturating_sub(keep);
         if summary_len == 0 {
-            return messages.to_vec();
+            return Ok(messages.to_vec());
         }
 
         let summary = summarize_messages(&messages[..summary_len], self.max_chars_per_turn);
         let mut result = Vec::with_capacity(keep + 1);
         result.push(Message::system(summary));
         result.extend_from_slice(&messages[summary_len..]);
-        result
+        Ok(result)
     }
 }
 
@@ -210,11 +236,12 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             conversation_id: None,
+            message_id: None,
         }
     }
 
-    #[test]
-    fn window_compactor_leaves_short_history_alone() {
+    #[tokio::test]
+    async fn window_compactor_leaves_short_history_alone() {
         let compactor = WindowCompactor::default();
         let messages: Vec<Message> = (0..10)
             .map(|i| {
@@ -226,13 +253,13 @@ mod tests {
             })
             .collect();
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         assert_eq!(compacted.len(), messages.len());
         assert_eq!(compacted, messages);
     }
 
-    #[test]
-    fn window_compactor_keeps_last_fraction_verbatim() {
+    #[tokio::test]
+    async fn window_compactor_keeps_last_fraction_verbatim() {
         let compactor = WindowCompactor {
             keep_ratio: 0.2,
             min_keep: 2,
@@ -249,7 +276,7 @@ mod tests {
             })
             .collect();
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         // 20 * 0.2 = 4 kept, 16 summarized into one system message.
         assert_eq!(compacted.len(), 5);
         assert_eq!(compacted[0].role, Role::System);
@@ -259,8 +286,8 @@ mod tests {
         assert_eq!(compacted[4].content.as_deref(), Some("assistant turn 19"));
     }
 
-    #[test]
-    fn window_compactor_respects_min_keep() {
+    #[tokio::test]
+    async fn window_compactor_respects_min_keep() {
         let compactor = WindowCompactor {
             keep_ratio: 0.05,
             min_keep: 5,
@@ -271,13 +298,13 @@ mod tests {
             .map(|i| msg(Role::User, &format!("turn {i}")))
             .collect();
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         // 5 kept + 1 summary = 6.
         assert_eq!(compacted.len(), 6);
     }
 
-    #[test]
-    fn summary_preserves_texture_not_just_keywords() {
+    #[tokio::test]
+    async fn summary_preserves_texture_not_just_keywords() {
         let compactor = WindowCompactor {
             keep_ratio: 0.2,
             min_keep: 2,
@@ -310,7 +337,7 @@ mod tests {
             ),
         ];
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         let summary = compacted[0].content.as_deref().unwrap_or("");
 
         // The summary should read like a narrative back-and-forth, not a keyword list.
@@ -322,8 +349,8 @@ mod tests {
         assert!(!summary.contains("<scratchpad>"));
     }
 
-    #[test]
-    fn tool_calls_are_summarized() {
+    #[tokio::test]
+    async fn tool_calls_are_summarized() {
         let compactor = WindowCompactor {
             keep_ratio: 0.5,
             min_keep: 1,
@@ -339,13 +366,13 @@ mod tests {
         let user_msg = Message::user("what's the weather?", None);
         let messages = vec![assistant_msg, user_msg];
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         let summary = compacted[0].content.as_deref().unwrap_or("");
         assert!(summary.contains("used tool(s): weather"));
     }
 
-    #[test]
-    fn person_id_is_included_in_summary() {
+    #[tokio::test]
+    async fn person_id_is_included_in_summary() {
         let compactor = WindowCompactor {
             keep_ratio: 0.5,
             min_keep: 1,
@@ -357,7 +384,7 @@ mod tests {
         let assistant_msg = Message::assistant("hi person-42!", None::<String>);
         let messages = vec![user_msg, assistant_msg];
 
-        let compacted = compactor.compact(&messages);
+        let compacted = compactor.compact(&messages, &"test".into()).await.unwrap();
         let summary = compacted[0].content.as_deref().unwrap_or("");
         assert!(summary.contains("user (person-42) said"));
     }

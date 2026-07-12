@@ -201,11 +201,14 @@ fn provider_events_from_openai(
         }
         Some("response.completed") => {
             if let Some(usage) = evt.data.get("usage") {
-                let (input_tokens, output_tokens, reasoning_tokens) = parse_usage(usage);
+                let (input_tokens, output_tokens, reasoning_tokens, cached_tokens, uncached_tokens) =
+                    parse_usage(usage);
                 events.push(ProviderEvent::Usage(Usage {
                     input_tokens,
                     output_tokens,
                     reasoning_tokens,
+                    cached_tokens,
+                    uncached_tokens,
                     prompt_processing_ms: 0,
                     generation_ms: 0,
                 }));
@@ -220,7 +223,7 @@ fn provider_events_from_openai(
     Ok(events)
 }
 
-fn parse_usage(value: &Value) -> (usize, usize, usize) {
+fn parse_usage(value: &Value) -> (usize, usize, usize, usize, usize) {
     let input_tokens = value
         .get("input_tokens")
         .and_then(|v| v.as_u64())
@@ -235,7 +238,20 @@ fn parse_usage(value: &Value) -> (usize, usize, usize) {
         .and_then(|d| d.get("reasoning"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
-    (input_tokens, output_tokens, reasoning_tokens)
+    let cached_tokens = value
+        .get("input_tokens_details")
+        .and_then(|d| d.as_object())
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let uncached_tokens = input_tokens.saturating_sub(cached_tokens);
+    (
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        cached_tokens,
+        uncached_tokens,
+    )
 }
 
 fn into_openai(msg: Message) -> Result<Vec<Value>> {

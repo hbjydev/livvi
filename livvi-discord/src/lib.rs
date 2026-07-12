@@ -24,7 +24,7 @@ impl EventHandler for Handler {
             Err(e) => {
                 error!(error = %e, "Failed to look up current user ID");
                 return;
-            },
+            }
         };
 
         if msg.author.id == current_user_id {

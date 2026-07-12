@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
 use livvi_store::{ConversationId, PersonId};
-
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
@@ -61,6 +61,8 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<ConversationId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<Uuid>,
 }
 
 impl Message {
@@ -73,6 +75,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             conversation_id: None,
+            message_id: None,
         }
     }
 
@@ -85,6 +88,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             conversation_id: None,
+            message_id: Some(Uuid::new_v4()),
         }
     }
 
@@ -100,6 +104,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             conversation_id: None,
+            message_id: Some(Uuid::new_v4()),
         }
     }
 
@@ -116,6 +121,7 @@ impl Message {
             tool_calls: Some(calls),
             tool_call_id: None,
             conversation_id: None,
+            message_id: Some(Uuid::new_v4()),
         }
     }
 
@@ -128,6 +134,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(id.into()),
             conversation_id: None,
+            message_id: Some(Uuid::new_v4()),
         }
     }
 
@@ -141,6 +148,8 @@ pub struct Usage {
     pub input_tokens: usize,
     pub output_tokens: usize,
     pub reasoning_tokens: usize,
+    pub cached_tokens: usize,
+    pub uncached_tokens: usize,
     pub prompt_processing_ms: u64,
     pub generation_ms: u64,
 }

@@ -43,13 +43,19 @@ pub async fn discord_react(
         });
     }
 
-    let channel_id = channel_id.parse::<u64>()
+    let channel_id = channel_id
+        .parse::<u64>()
         .with_context(|| "parsing channel id")
-        .map_err(|e| DiscordReactError { message: e.to_string() })?;
+        .map_err(|e| DiscordReactError {
+            message: e.to_string(),
+        })?;
 
-    let message_id = message_id.parse::<u64>()
+    let message_id = message_id
+        .parse::<u64>()
         .with_context(|| "parsing message id")
-        .map_err(|e| DiscordReactError { message: e.to_string() })?;
+        .map_err(|e| DiscordReactError {
+            message: e.to_string(),
+        })?;
 
     state
         .send_reaction(channel_id, message_id, emoji)
