@@ -6,7 +6,7 @@ pub use state::DiscordState;
 
 use anyhow::Result;
 use livvi_core::interrupt::Interrupt;
-use serenity::all::{Client, Context, EventHandler, GatewayIntents, Message, Ready};
+use serenity::all::{CacheHttp, Client, Context, EventHandler, GatewayIntents, Message, Ready};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -19,7 +19,15 @@ struct Handler {
 #[serenity::async_trait]
 impl EventHandler for Handler {
     async fn message(&self, _ctx: Context, msg: Message) {
-        if msg.author.bot {
+        let current_user_id = match _ctx.http().get_current_user().await {
+            Ok(user) => user.id,
+            Err(e) => {
+                error!(error = %e, "Failed to look up current user ID");
+                return;
+            },
+        };
+
+        if msg.author.id == current_user_id {
             return;
         }
 
