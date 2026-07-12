@@ -22,6 +22,8 @@ pub struct DiscordSendError {
     pub message: String,
 }
 
+/// Sends a message to a Discord channel, optionally in reply to another
+/// message.
 #[tool]
 pub async fn discord_send(
     Input(DiscordSendInput {

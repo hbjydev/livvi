@@ -5,7 +5,7 @@ experimental = true
 _.file = "{{ config_root }}/.env"
 
 [tools]
-rust = { version = "1.96.0", components = "rustfmt,clippy,llvm-tools-preview" }
+"core:rust" = { version = "1.96.0", components = "rustfmt,clippy,llvm-tools-preview" }
 "aqua:EmbarkStudios/cargo-deny" = "0.19.9"
 "aqua:taiki-e/cargo-llvm-cov" = "0.8.7"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.138"

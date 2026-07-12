@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    AgentEvent, LIVVI_BASE_SOUL_MD, compaction::Compactor, context::Context, interrupt::Interrupt,
+    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt,
     tool::Toolbox,
 };
 
@@ -116,7 +116,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut ctx = Context::new(format!("{}\n\n{}", LIVVI_BASE_SOUL_MD, self.soul,));
+        let mut ctx = Context::new(format!("{}", self.soul));
 
         tracing::info!("Agent started running, beginning loop...");
         loop {

@@ -30,3 +30,7 @@ as such, it is up to you to decide whether or not to respond.
 you to specify a channel, message body, and optionally a message id to reply to.
 **sending back non-tool responses to reply to discord will not work** as those
 messages will form your _scratchpad_, not your response to a discord message.
+
+**if you want to send a reaction to a message**, like to express support, a
+feeling, or anything similar, you also have the `discord_react` tool, which lets
+you attach a Unicode emoji to a message.

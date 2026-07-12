@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use serenity::all::{ChannelId, CreateMessage, Http, MessageId};
+use serenity::all::{ChannelId, CreateMessage, Http, MessageId, ReactionType};
 
 /// A Discord-specific state object that wraps the serenity HTTP client.
 ///
@@ -38,6 +38,20 @@ impl DiscordState {
 
         ChannelId::new(channel_id)
             .send_message(&*self.http, builder)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Send a reaction to a Discord message.
+    pub async fn send_reaction(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        emoji: String,
+    ) -> Result<()> {
+        ChannelId::new(channel_id)
+            .create_reaction(&*self.http, message_id, ReactionType::Unicode(emoji))
             .await?;
 
         Ok(())

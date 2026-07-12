@@ -4,7 +4,7 @@ use livvi_core::{
     interrupt::{ExternalEvent, Interrupt},
     tool::Toolbox,
 };
-use livvi_discord::tools::discord_send;
+use livvi_discord::tools::{discord_react, discord_send};
 use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
@@ -71,9 +71,12 @@ async fn main() -> Result<()> {
         .with_toolbox({
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
+            toolbox.add_tool(discord_react);
             toolbox
         })
-        .with_soul(DISCORD_INSTRUCTIONS.to_string())
+        .with_soul(
+            format!("{}\n\n{}", include_str!("../../SOUL.md").to_string(), DISCORD_INSTRUCTIONS.to_string())
+        )
         .with_input(resolved_rx)
         .build()?;
 
