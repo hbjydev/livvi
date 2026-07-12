@@ -1,7 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use livvi_store::ConversationId;
+use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
@@ -116,7 +117,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut contexts: HashMap<ConversationId, Context> = HashMap::new();
+        let context_lru_capacity = std::env::var("LIVVI_AGENT_CONTEXT_LRU_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .and_then(NonZeroUsize::new)
+            .unwrap_or(NonZeroUsize::new(1024).unwrap());
+        let mut contexts: LruCache<ConversationId, Context> = LruCache::new(context_lru_capacity);
 
         tracing::info!("Agent started running, beginning loop...");
         loop {
@@ -130,8 +136,9 @@ impl<S: Sync + Send + 'static> Agent<S> {
                                 .clone()
                                 .unwrap_or_else(|| ConversationId::from("global")),
                         };
-                        let ctx = contexts.entry(conversation_id.clone()).or_insert_with(|| {
-                            Context::new(self.soul.to_string(), Some(conversation_id.clone()))
+                        let soul = self.soul.clone();
+                        let ctx = contexts.get_or_insert_mut(conversation_id.clone(), || {
+                            Context::new(soul, Some(conversation_id.clone()))
                         });
                         next_interrupt = self
                             .handle_interrupt(interrupt, ctx, &conversation_id)
@@ -162,6 +169,7 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 

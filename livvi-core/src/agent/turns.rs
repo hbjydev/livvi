@@ -160,7 +160,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         let mut thinking = String::new();
         let mut tool_calls = vec![];
         let cancelled_by = None;
-        let mut listening_for_interrupts = true;
+        let mut listening_for_interrupts = stashed_interrupt.is_none();
 
         loop {
             tokio::select! {

@@ -108,11 +108,50 @@ impl LcmConversationState {
 
     /// Return the active (top-level) summaries: those with no parent.
     pub fn active_summaries(&self) -> Vec<&SummaryNode> {
-        let parent_ids: std::collections::HashSet<_> =
-            self.summaries.iter().filter_map(|s| s.parent_id).collect();
         self.summaries
             .iter()
-            .filter(|s| !parent_ids.contains(&s.id))
+            .filter(|s| s.parent_id.is_none())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use livvi_core::model::Message;
+    use uuid::Uuid;
+
+    #[test]
+    fn active_summaries_returns_roots_not_children() {
+        let mut state = LcmConversationState::default();
+        let child_a = SummaryNode::new(0, "child a".to_string(), vec![Uuid::new_v4()]);
+        let child_b = SummaryNode::new(0, "child b".to_string(), vec![Uuid::new_v4()]);
+        let parent = SummaryNode::new(1, "parent".to_string(), vec![child_a.id, child_b.id]);
+
+        // Mirror what condense_summaries does: children point to parent.
+        let mut child_a = child_a;
+        let mut child_b = child_b;
+        child_a.parent_id = Some(parent.id);
+        child_b.parent_id = Some(parent.id);
+
+        state.summaries = vec![child_a, child_b, parent.clone()];
+
+        let active = state.active_summaries();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, parent.id);
+    }
+
+    #[test]
+    fn merge_raw_messages_skips_system_messages() {
+        let mut state = LcmConversationState::default();
+        state.merge_raw_messages(&[
+            Message::user("hello".to_string(), None),
+            Message::system("beep"),
+        ]);
+        assert_eq!(state.raw_messages.len(), 1);
+        assert!(matches!(
+            state.raw_messages[0].role,
+            livvi_core::model::Role::User
+        ));
     }
 }

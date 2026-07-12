@@ -5,6 +5,7 @@ use livvi_store::ConversationId;
 use parking_lot::Mutex;
 use serde_json;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqlitePoolOptions;
 use time::OffsetDateTime;
 use tracing::instrument;
 use uuid::Uuid;
@@ -44,7 +45,19 @@ pub struct LcmSqliteStore {
 impl LcmSqliteStore {
     /// Connect to a SQLite database and run pending migrations.
     pub async fn connect(database_url: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let pool = if database_url.starts_with("sqlite::memory:")
+            || database_url.starts_with("file::memory:")
+        {
+            // In-memory SQLite databases are private to each connection unless
+            // a shared cache is used. Force a single-connection pool so every
+            // query operates on the same in-memory database.
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(database_url)
+                .await?
+        } else {
+            SqlitePool::connect(database_url).await?
+        };
         sqlx::migrate!().run(&pool).await?;
         Ok(Self { pool })
     }
@@ -67,11 +80,12 @@ impl LcmStore for LcmSqliteStore {
             return Ok(());
         }
 
+        let mut tx = self.pool.begin().await?;
         let max_sequence: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT COALESCE(MAX(sequence), 0) FROM lcm_messages WHERE conversation_id = ?",
         )
         .bind(&conversation_id.0)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
         for (i, msg) in messages.iter().enumerate() {
@@ -108,10 +122,11 @@ impl LcmStore for LcmSqliteStore {
             .bind(tool_call_id)
             .bind(thinking_content)
             .bind(created_at)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
 
+        tx.commit().await?;
         Ok(())
     }
 
@@ -273,7 +288,15 @@ impl LcmStore for MockLcmStore {
             if to_save.message_id.is_none() {
                 to_save.message_id = Some(Uuid::new_v4());
             }
-            stored.push((conversation_id.clone(), to_save));
+            let id = to_save.message_id.unwrap();
+            if let Some((_, existing)) = stored
+                .iter_mut()
+                .find(|(cid, m)| cid == conversation_id && m.message_id == Some(id))
+            {
+                *existing = to_save;
+            } else {
+                stored.push((conversation_id.clone(), to_save));
+            }
         }
         Ok(())
     }
@@ -308,5 +331,39 @@ impl LcmStore for MockLcmStore {
             .filter(|s| s.conversation_id.as_ref() == Some(conversation_id))
             .cloned()
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use livvi_core::model::Message;
+    use livvi_store::ConversationId;
+
+    #[tokio::test]
+    async fn mock_store_upserts_messages_by_id() {
+        let store = MockLcmStore::new();
+        let conversation_id = ConversationId::from("test-conv");
+        let message_id = Uuid::new_v4();
+
+        let first = Message::user("first".to_string(), None);
+        let mut first = first;
+        first.message_id = Some(message_id);
+
+        let mut second = Message::user("second".to_string(), None);
+        second.message_id = Some(message_id);
+
+        store
+            .save_messages(&conversation_id, &[first])
+            .await
+            .unwrap();
+        store
+            .save_messages(&conversation_id, &[second.clone()])
+            .await
+            .unwrap();
+
+        let loaded = store.load_messages(&conversation_id).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].content, second.content);
     }
 }

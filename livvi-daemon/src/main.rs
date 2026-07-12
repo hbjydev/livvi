@@ -64,7 +64,10 @@ async fn main() -> Result<()> {
             let provider =
                 OpenAIChatCompletionsProvider::new(&key, &openai_base_url, &openai_model)?;
             let compactor: Box<dyn livvi_core::compaction::Compactor> =
-                if env::var("LIVVI_LCM_ENABLE").is_ok() {
+                if env::var("LIVVI_LCM_ENABLE")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+                {
                     let lcm_database_url = env::var("LIVVI_LCM_DATABASE_URL")
                         .unwrap_or_else(|_| "sqlite:lcm.db?mode=rwc".to_string());
                     let store = Arc::new(LcmSqliteStore::connect(&lcm_database_url).await?);

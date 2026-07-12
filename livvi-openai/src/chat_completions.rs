@@ -107,8 +107,13 @@ impl Provider for OpenAIChatCompletionsProvider {
         while let Some(chunk_result) = chunk_stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
-                    if let Some(usage) = chunk.usage
-                        && tx
+                    if let Some(usage) = chunk.usage {
+                        let cached_tokens = usage
+                            .prompt_tokens_details
+                            .as_ref()
+                            .and_then(|d| d.cached_tokens)
+                            .unwrap_or(0) as usize;
+                        if tx
                             .send(ProviderEvent::Usage(Usage {
                                 input_tokens: usage.prompt_tokens as usize,
                                 output_tokens: usage.completion_tokens as usize,
@@ -118,26 +123,17 @@ impl Provider for OpenAIChatCompletionsProvider {
                                     .and_then(|d| d.reasoning_tokens)
                                     .unwrap_or(0)
                                     as usize,
-                                cached_tokens: usage
-                                    .prompt_tokens_details
-                                    .as_ref()
-                                    .and_then(|d| d.cached_tokens)
-                                    .unwrap_or(0)
-                                    as usize,
-                                uncached_tokens: (usage.prompt_tokens
-                                    - usage
-                                        .prompt_tokens_details
-                                        .as_ref()
-                                        .and_then(|d| d.cached_tokens)
-                                        .unwrap_or(0))
-                                    as usize,
+                                cached_tokens,
+                                uncached_tokens: (usage.prompt_tokens as usize)
+                                    .saturating_sub(cached_tokens),
                                 prompt_processing_ms: 0,
                                 generation_ms: 0,
                             }))
                             .await
                             .is_err()
-                    {
-                        return Ok(());
+                        {
+                            return Ok(());
+                        }
                     }
 
                     for choice in &chunk.choices {

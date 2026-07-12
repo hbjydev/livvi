@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -20,12 +21,14 @@ use crate::{
     store::LcmStore,
 };
 
+const SUMMARIZE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Hierarchical LCM compactor that maintains a persistent summary DAG.
 pub struct LcmCompactor {
     summarizer: Arc<dyn Summarizer>,
     store: Arc<dyn LcmStore>,
     config: LcmConfig,
-    state: Mutex<HashMap<ConversationId, LcmConversationState>>,
+    state: Mutex<HashMap<ConversationId, Arc<Mutex<LcmConversationState>>>>,
 }
 
 impl LcmCompactor {
@@ -52,10 +55,17 @@ impl Compactor for LcmCompactor {
         messages: &[Message],
         conversation_id: &ConversationId,
     ) -> Result<Vec<Message>> {
-        let mut cache = self.state.lock().await;
-        let mut state = cache
-            .remove(conversation_id)
-            .unwrap_or_else(LcmConversationState::default);
+        // Get or create the per-conversation state lock. The outer lock is only
+        // held briefly; compaction work for this conversation is serialized by
+        // the inner lock, not a global lock.
+        let state_arc = {
+            let mut cache = self.state.lock().await;
+            cache
+                .entry(conversation_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(LcmConversationState::default())))
+                .clone()
+        };
+        let mut state = state_arc.lock().await;
 
         // If the cache is empty, load the persisted state.
         if state.raw_messages.is_empty() && state.summaries.is_empty() {
@@ -105,6 +115,7 @@ impl Compactor for LcmCompactor {
             .map(|m| m.content_str().chars().count() / 4)
             .sum();
 
+        let mut summarized_ids: HashSet<Uuid> = HashSet::new();
         if token_proxy > self.config.chunk_threshold {
             // Chunk the oldest eligible raw messages into groups of up to
             // fresh_tail_count and summarize each chunk into a depth-0 node.
@@ -122,9 +133,20 @@ impl Compactor for LcmCompactor {
                 let summary = SummaryNode::new(0, content, source_ids);
                 self.store.save_summary(conversation_id, &summary).await?;
                 state.summaries.push(summary);
+                summarized_ids.extend(
+                    state.raw_messages[i..chunk_end]
+                        .iter()
+                        .filter_map(|m| m.message_id),
+                );
 
                 self.condense_summaries(conversation_id, &mut state).await?;
             }
+
+            // Remove raw messages that have been rolled into depth-0 summaries
+            // so they are not re-summarized on the next turn.
+            state
+                .raw_messages
+                .retain(|m| !summarized_ids.contains(&m.message_id.unwrap_or_default()));
         }
 
         // Assemble the active context: top-level summaries followed by the
@@ -136,10 +158,11 @@ impl Compactor for LcmCompactor {
         for summary in active {
             result.push(Message::system(summary.content.clone()));
         }
-        result.extend(state.raw_messages[tail_start..].iter().cloned());
-
-        // Update the cache.
-        cache.insert(conversation_id.clone(), state);
+        let new_tail_start = state
+            .raw_messages
+            .len()
+            .saturating_sub(self.config.fresh_tail_count);
+        result.extend(state.raw_messages[new_tail_start..].iter().cloned());
 
         Ok(result)
     }
@@ -151,7 +174,7 @@ impl LcmCompactor {
         conversation_id: &ConversationId,
         state: &mut LcmConversationState,
     ) -> Result<()> {
-        for depth in 0..=self.config.max_depth {
+        for depth in 0..self.config.max_depth {
             let to_condense: Vec<Uuid> = {
                 let mut active_at_depth: Vec<&SummaryNode> = state
                     .summaries
@@ -182,10 +205,11 @@ impl LcmCompactor {
                 summarize_or_default(&*self.summarizer, prompt, "(no summary)".to_string()).await?;
             let parent = SummaryNode::new(depth + 1, content, to_condense.clone());
 
-            // Mark children as condensed.
+            // Mark children as condensed and persist their updated parent_id.
             for child_id in &to_condense {
                 if let Some(s) = state.summaries.iter_mut().find(|s| s.id == *child_id) {
                     s.parent_id = Some(parent.id);
+                    self.store.save_summary(conversation_id, s).await?;
                 }
             }
 
@@ -202,11 +226,16 @@ async fn summarize_or_default(
     prompt: Vec<Message>,
     default: String,
 ) -> Result<String> {
-    match summarizer.summarize(prompt).await {
-        Ok(text) if text.trim().is_empty() => Ok(default),
-        Ok(text) => Ok(text),
-        Err(e) => {
+    let result = tokio::time::timeout(SUMMARIZE_TIMEOUT, summarizer.summarize(prompt)).await;
+    match result {
+        Ok(Ok(text)) if text.trim().is_empty() => Ok(default),
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(e)) => {
             tracing::warn!("summarizer failed: {}", e);
+            Ok(default)
+        }
+        Err(_) => {
+            tracing::warn!("summarizer timed out after {:?}", SUMMARIZE_TIMEOUT);
             Ok(default)
         }
     }
@@ -314,5 +343,50 @@ mod tests {
         let stored_summaries = store.load_summaries(&conversation_id).await.unwrap();
         assert_eq!(stored_messages.len(), 12);
         assert!(!stored_summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lcm_compactor_prunes_summarised_raw_messages() {
+        let store = Arc::new(MockLcmStore::new());
+        let summarizer = Arc::new(MockSummarizer {
+            prefix: "summary".to_string(),
+        });
+        let config = LcmConfig {
+            fresh_tail_count: 4,
+            chunk_threshold: 50,
+            condensation_count: 4,
+            max_depth: 3,
+        };
+        let compactor = LcmCompactor::new(summarizer, store.clone(), config);
+        let conversation_id = ConversationId::from("test-conv");
+
+        let messages: Vec<Message> = (0..12)
+            .map(|i| {
+                let content = format!(
+                    "user message {} with a lot of content to exceed the threshold",
+                    i
+                );
+                Message::user(content, None)
+            })
+            .collect();
+
+        // First compaction summarises eligible messages and prunes them from memory.
+        compactor
+            .compact(&messages, &conversation_id)
+            .await
+            .unwrap();
+
+        // Second compaction with no new messages should not create duplicate summaries.
+        let compacted = compactor.compact(&[], &conversation_id).await.unwrap();
+
+        let summary_count = compacted
+            .iter()
+            .filter(|m| matches!(m.role, Role::System))
+            .count();
+        assert_eq!(summary_count, 2, "expected two top-level summaries");
+        assert_eq!(compacted.len() - summary_count, config.fresh_tail_count);
+
+        let stored_summaries = store.load_summaries(&conversation_id).await.unwrap();
+        assert_eq!(stored_summaries.len(), 2);
     }
 }
