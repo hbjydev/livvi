@@ -1,3 +1,5 @@
+use std::fmt::{self, Debug};
+
 use livvi_store::{ConversationId, PersonId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +30,7 @@ pub struct ExternalConversation {
 /// transport event may need to be resolved against a [`LivviStore`] before it
 /// reaches the agent loop. When present, they identify the canonical
 /// [`Person`] and [`Conversation`] records in storage.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalEvent {
     pub transport_kind: String,
     pub event_type: String,
@@ -39,6 +41,18 @@ pub struct ExternalEvent {
     pub conversation_id: Option<ConversationId>,
     pub metadata: Value,
     pub timestamp: Option<OffsetDateTime>,
+}
+
+impl Debug for ExternalEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f
+            .debug_struct("ExternalEvent")
+            .field("transport", &self.transport_kind)
+            .field("type", &self.event_type)
+            .field("author", &self.person_id)
+            .field("conv", &self.conversation_id)
+            .finish()
+    }
 }
 
 impl ExternalEvent {
