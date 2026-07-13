@@ -1,7 +1,7 @@
 use livvi_core::{
     memory::{
-        Briefing, BriefingRequest, Level, ListRequest, Memory, MemoryContext, MemoryProvider,
-        RecallRequest, RememberRequest, Scope, ScoredMemory, Tier, UpdateRequest,
+        About, Briefing, BriefingRequest, Level, ListRequest, Memory, MemoryContext,
+        MemoryProvider, RecallRequest, RememberRequest, Scope, ScoredMemory, Tier, UpdateRequest,
     },
     tool::{Context, Input, State, tool},
 };
@@ -10,6 +10,28 @@ use serde::{Deserialize, Serialize};
 
 fn base_namespace() -> String {
     std::env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string())
+}
+
+fn namespace_for_about(base_namespace: &str, about: &About) -> String {
+    match about {
+        About::Person(person_id) => format!("{base_namespace}/persons/{person_id}"),
+        About::Conversation(conversation_id) => {
+            format!("{base_namespace}/conversations/{conversation_id}")
+        }
+        About::Global => base_namespace.to_string(),
+    }
+}
+
+fn memory_context_for_about(
+    base_namespace: &str,
+    about: Option<&About>,
+    tool_context: &livvi_core::context::Context,
+) -> MemoryContext {
+    let mut ctx = MemoryContext::from_tool_context(base_namespace, tool_context);
+    if let Some(about) = about {
+        ctx.namespace = namespace_for_about(base_namespace, about);
+    }
+    ctx
 }
 
 fn default_scope_full() -> Option<Scope> {
@@ -36,6 +58,8 @@ pub struct MemoryRecallInput {
         skip_serializing_if = "Option::is_none"
     )]
     pub scope: Option<Scope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<About>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -55,6 +79,8 @@ pub struct MemoryRememberInput {
     pub level: Option<Level>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<About>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -103,6 +129,8 @@ pub struct MemoryUpdateInput {
     pub level: Option<Level>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<About>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -117,7 +145,7 @@ pub async fn memory_recall(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Vec<ScoredMemory>, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
     let request = RecallRequest {
         query: input.query,
         tiers: input.tiers,
@@ -134,6 +162,7 @@ pub async fn memory_recall(
         namespaces: None,
         as_of: None,
         min_score: None,
+        about: input.about,
     };
 
     memory
@@ -149,7 +178,7 @@ pub async fn memory_remember(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
     let request = RememberRequest {
         content: input.content,
         tier: input.tier,
@@ -164,6 +193,7 @@ pub async fn memory_remember(
         valid_to: None,
         confidence: None,
         visibility: input.visibility.or_else(|| Some("project".to_string())),
+        about: input.about,
     };
 
     memory
@@ -243,7 +273,7 @@ pub async fn memory_update(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
     let request = UpdateRequest {
         id: input.id,
         content: input.content,
@@ -258,6 +288,7 @@ pub async fn memory_update(
         valid_to: None,
         confidence: None,
         visibility: input.visibility,
+        about: input.about,
     };
 
     memory

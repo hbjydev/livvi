@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 use crate::person::{Person, PersonId};
 
 /// Canonical identifier for a [`Conversation`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct ConversationId(pub String);
 

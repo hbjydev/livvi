@@ -211,6 +211,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 valid_to: None,
                 confidence: None,
                 visibility: None,
+                about: None,
             };
             if let Err(e) = provider.remember(mem_ctx, request).await {
                 tracing::warn!("failed to capture turn in memory: {e}");

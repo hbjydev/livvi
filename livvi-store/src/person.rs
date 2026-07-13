@@ -7,7 +7,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 /// Canonical identifier for a [`Person`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct PersonId(pub String);
 

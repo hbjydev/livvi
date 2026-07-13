@@ -66,6 +66,15 @@ impl MemoryContext {
     }
 }
 
+/// Internal scope selector for memory operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum About {
+    Person(PersonId),
+    Conversation(ConversationId),
+    Global,
+}
+
 /// Tier of a memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -190,6 +199,8 @@ pub struct RememberRequest {
     pub confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    #[serde(skip_serializing)]
+    pub about: Option<About>,
 }
 
 impl Tier {
@@ -230,6 +241,8 @@ pub struct RecallRequest {
     pub as_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_score: Option<f64>,
+    #[serde(skip_serializing)]
+    pub about: Option<About>,
 }
 
 /// Request a session-start briefing.
@@ -301,6 +314,8 @@ pub struct UpdateRequest {
     pub confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+    #[serde(skip_serializing)]
+    pub about: Option<About>,
 }
 
 impl From<UpdateRequest> for RememberRequest {
@@ -319,6 +334,7 @@ impl From<UpdateRequest> for RememberRequest {
             valid_to: update.valid_to,
             confidence: update.confidence,
             visibility: update.visibility,
+            about: update.about,
         }
     }
 }

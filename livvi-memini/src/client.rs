@@ -335,6 +335,7 @@ mod tests {
             valid_to: None,
             confidence: None,
             visibility: None,
+            about: None,
         };
 
         let memory = client
@@ -391,6 +392,7 @@ mod tests {
             namespaces: None,
             as_of: None,
             min_score: None,
+            about: None,
         };
 
         let results = client
