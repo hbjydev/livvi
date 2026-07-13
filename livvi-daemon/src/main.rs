@@ -19,6 +19,7 @@ use livvi_memini::tools::{
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
 use std::env;
+use std::io::IsTerminal;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -115,7 +116,12 @@ impl MemoryProvider for NoopMemoryProvider {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .with_ansi(std::io::stderr().is_terminal())
+        .compact()
+        .init();
 
     info!("Starting Livvi...");
 

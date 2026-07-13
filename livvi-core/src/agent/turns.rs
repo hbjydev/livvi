@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::{
     AgentEvent,
@@ -31,7 +31,10 @@ struct StreamIteration {
 }
 
 impl<S: Sync + Send + 'static> Agent<S> {
-    #[tracing::instrument(skip(self, interrupt, context))]
+    #[tracing::instrument(skip(self, interrupt, context, conversation_id), fields(
+        conversation_id = %conversation_id,
+        interrupt = %interrupt
+    ))]
     pub(super) async fn run_turn(
         &mut self,
         interrupt: Interrupt,
@@ -45,7 +48,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         let mut nudge_count = 0;
         let user_content;
 
-        info!("Running turn with interrupt: {:?}", interrupt);
+        info!("turn started");
         let _ = self.output.send(AgentEvent::Started);
 
         if !matches!(interrupt, Interrupt::ExternalEvent(..)) {
@@ -136,7 +139,11 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 );
 
                 for tool_call in tool_calls.clone() {
-                    debug!("Executing tool call: {:?}", tool_call);
+                    info!(
+                        tool_name = %tool_call.name,
+                        tool_call_id = %tool_call.id,
+                        "executing tool call"
+                    );
                     let _ = self
                         .output
                         .send(AgentEvent::ToolCall(vec![tool_call.clone()]));
@@ -151,6 +158,14 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
                         let result = tool.call(&ctx, tool_call.input).await;
                         let tool_result = result.into_tool_result(&tool_call.id);
+
+                        info!(
+                            tool_name = %tool_call.name,
+                            tool_call_id = %tool_call.id,
+                            is_error = tool_result.is_error,
+                            content_len = tool_result.content.len(),
+                            "tool call finished"
+                        );
 
                         if tool_result.is_error {
                             let msg = format!("Tool call failed: {}", tool_result.content);
@@ -200,6 +215,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
             break Some(iteration_response);
         };
+
+        info!(
+            response_len = final_response.as_ref().map(|r| r.len()).unwrap_or(0),
+            response = final_response.as_deref().unwrap_or(""),
+            "model response"
+        );
 
         if let Some(provider) = self.memory_provider.as_deref()
             && let Some(user_text) = event.content.as_deref()
@@ -257,7 +278,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
         let _ = self.output.send(AgentEvent::Done);
 
-        info!("Turn completed. Stashed interrupt: {:?}", stashed_interrupt);
+        info!(stashed_interrupt = ?stashed_interrupt, "turn completed");
 
         Ok(stashed_interrupt)
     }
@@ -348,13 +369,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
             }
         };
 
-        tracing::debug!(
-            "Stream iteration completed. Response length: {}, Thinking length: {}, Tool calls: {}, Stream error: {:?}, Cancelled by: {:?}",
-            response.len(),
-            thinking.len(),
-            tool_calls.len(),
-            stream_error,
-            cancelled_by
+        tracing::info!(
+            response_len = response.len(),
+            thinking_len = thinking.len(),
+            tool_call_count = tool_calls.len(),
+            has_error = stream_error.is_some(),
+            "stream iteration completed"
         );
         tracing::debug!("Stream response: {}", response);
         tracing::debug!("Stream thinking: {}", thinking);

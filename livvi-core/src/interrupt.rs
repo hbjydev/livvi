@@ -1,4 +1,4 @@
-use std::fmt::{self, Debug};
+use std::fmt::{self, Debug, Display};
 
 use livvi_store::{ConversationId, PersonId};
 use serde::{Deserialize, Serialize};
@@ -48,9 +48,41 @@ impl Debug for ExternalEvent {
         f.debug_struct("ExternalEvent")
             .field("transport", &self.transport_kind)
             .field("type", &self.event_type)
-            .field("author", &self.person_id)
-            .field("conv", &self.conversation_id)
+            .field("author", &self.person_id.as_ref().map(|p| short_id(&p.0)))
+            .field(
+                "conv",
+                &self.conversation_id.as_ref().map(|c| short_id(&c.0)),
+            )
             .finish()
+    }
+}
+
+impl Display for ExternalEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.transport_kind, self.event_type)?;
+        if let Some(person) = &self.person_id {
+            write!(f, " person={}", short_id(&person.0))?;
+        } else if let Some(name) = &self.author.display_name {
+            write!(f, " author={}", name)?;
+        } else {
+            write!(f, " author={}", self.author.transport_id)?;
+        }
+        if let Some(conv) = &self.conversation_id {
+            write!(f, " conv={}", short_id(&conv.0))?;
+        } else if let Some(name) = &self.conversation.display_name {
+            write!(f, " conv={}", name)?;
+        } else {
+            write!(f, " conv={}", self.conversation.transport_id)?;
+        }
+        Ok(())
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    if id.is_ascii() && id.len() >= 8 {
+        &id[..8]
+    } else {
+        id
     }
 }
 
@@ -149,9 +181,25 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Interrupt {
     ExternalEvent(ExternalEvent),
+}
+
+impl Debug for Interrupt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Interrupt::ExternalEvent(event) => Display::fmt(event, f),
+        }
+    }
+}
+
+impl Display for Interrupt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Interrupt::ExternalEvent(event) => Display::fmt(event, f),
+        }
+    }
 }
 
 impl Interrupt {

@@ -147,6 +147,11 @@ impl<S: Sync + Send + 'static> Agent<S> {
                                 .clone()
                                 .unwrap_or_else(|| ConversationId::from("global")),
                         };
+                        tracing::info!(
+                            conversation_id = %conversation_id,
+                            interrupt = %interrupt,
+                            "received interrupt"
+                        );
                         let soul = self.soul.clone();
                         let ctx = contexts.get_or_insert_mut(conversation_id.clone(), || {
                             Context::new(soul, Some(conversation_id.clone()))
