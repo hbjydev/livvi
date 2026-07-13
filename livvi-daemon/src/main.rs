@@ -130,9 +130,12 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
     let memini_base_url = env::var("LIVVI_MEMINI_BASE_URL").ok();
-    let memini_api_key = env::var("LIVVI_MEMINI_API_KEY").unwrap_or_default();
+    let memini_api_key = env::var("LIVVI_MEMINI_API_KEY").ok();
     let memini_namespace =
         env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string());
+
+    let memini_configured = memini_base_url.as_ref().is_some_and(|u| !u.is_empty())
+        && memini_api_key.as_ref().is_some_and(|k| !k.is_empty());
 
     // Without a Discord token there is no way to feed the agent loop, so just
     // wait for a shutdown signal.
@@ -158,13 +161,16 @@ async fn main() -> Result<()> {
     let discord_state = Arc::new(DiscordState::new(&discord_token));
     let transport = DiscordTransport::new(&discord_token, raw_tx).await?;
 
-    let memini_configured = memini_base_url.is_some();
-    let memory_provider: Arc<dyn MemoryProvider> = match memini_base_url {
-        Some(base_url) => Arc::new(MeminiMemoryProvider::new(
-            livvi_memini::MeminiClient::new(base_url, memini_api_key),
+    let memory_provider: Arc<dyn MemoryProvider> = if memini_configured {
+        Arc::new(MeminiMemoryProvider::new(
+            livvi_memini::MeminiClient::new(
+                memini_base_url.expect("base url checked above"),
+                memini_api_key.expect("api key checked above"),
+            ),
             &memini_namespace,
-        )),
-        None => Arc::new(NoopMemoryProvider),
+        ))
+    } else {
+        Arc::new(NoopMemoryProvider)
     };
 
     let app_state = AppState {

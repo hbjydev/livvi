@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use livvi_core::tool::ToolDefinition;
@@ -18,6 +20,7 @@ fn schema_to_function_parameters(schema: schemars::Schema) -> FunctionParameters
 
 fn function_parameters_from_value(value: &Value, root: &Value) -> FunctionParameters {
     let value = normalize_schema(value, root);
+    let value = value.as_ref();
     FunctionParameters {
         schema_type: value
             .get("type")
@@ -42,6 +45,7 @@ fn function_parameters_from_value(value: &Value, root: &Value) -> FunctionParame
 
 fn json_schema_define_from_value(value: &Value, root: &Value) -> JSONSchemaDefine {
     let value = normalize_schema(value, root);
+    let value = value.as_ref();
     JSONSchemaDefine {
         schema_type: value.get("type").and_then(json_schema_type_from_value),
         description: value
@@ -72,43 +76,67 @@ fn json_schema_define_from_value(value: &Value, root: &Value) -> JSONSchemaDefin
     }
 }
 
-fn normalize_schema<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
+fn normalize_schema<'a>(value: &'a Value, root: &'a Value) -> Cow<'a, Value> {
     let value = resolve_ref(value, root);
     flatten_nullable(value, root)
 }
 
 fn resolve_ref<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
     if let Some(Value::String(ref_path)) = value.get("$ref") {
-        let mut current = root;
-        for part in ref_path.split('/').filter(|p| !p.is_empty() && *p != "#") {
-            if let Some(obj) = current.as_object() {
-                if let Some(next) = obj.get(part) {
-                    current = next;
-                } else {
-                    return value;
-                }
-            } else {
-                return value;
-            }
+        if ref_path.is_empty() {
+            return value;
         }
-        return current;
+        let pointer_path = ref_path.trim_start_matches('#');
+        return root.pointer(pointer_path).unwrap_or(value);
     }
     value
 }
 
-fn flatten_nullable<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
-    if let Some(obj) = value.as_object()
-        && let Some(any_of) = obj.get("anyOf").or_else(|| obj.get("oneOf"))
-        && let Some(arr) = any_of.as_array()
-    {
-        for v in arr {
-            let v = resolve_ref(v, root);
-            if !is_null_schema(v) {
-                return v;
-            }
+fn flatten_nullable<'a>(value: &'a Value, root: &'a Value) -> Cow<'a, Value> {
+    let Some(obj) = value.as_object() else {
+        return Cow::Borrowed(value);
+    };
+    let Some(any_of) = obj.get("anyOf").or_else(|| obj.get("oneOf")) else {
+        return Cow::Borrowed(value);
+    };
+    let Some(arr) = any_of.as_array() else {
+        return Cow::Borrowed(value);
+    };
+
+    let mut null_count = 0;
+    let mut non_null = Vec::new();
+    for v in arr {
+        let v = resolve_ref(v, root);
+        if is_null_schema(v) {
+            null_count += 1;
+        } else {
+            non_null.push(v);
         }
     }
-    value
+
+    if null_count == 0 || non_null.len() != 1 {
+        return Cow::Borrowed(value);
+    }
+
+    let inner = non_null[0];
+
+    let metadata_keys = ["description", "title", "default"];
+    let has_metadata = metadata_keys.iter().any(|k| obj.contains_key(*k));
+    if !has_metadata {
+        return Cow::Borrowed(inner);
+    }
+
+    let Some(inner_obj) = inner.as_object() else {
+        return Cow::Borrowed(inner);
+    };
+
+    let mut merged = obj.clone();
+    merged.remove("anyOf");
+    merged.remove("oneOf");
+    for (k, v) in inner_obj {
+        merged.insert(k.clone(), v.clone());
+    }
+    Cow::Owned(Value::Object(merged))
 }
 
 fn is_null_schema(value: &Value) -> bool {
@@ -227,5 +255,49 @@ mod tests {
                 "Blue".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn flatten_nullable_preserves_wrapper_metadata() {
+        let schema = serde_json::json!({
+            "description": "A color",
+            "title": "Color",
+            "default": "Red",
+            "anyOf": [
+                { "type": "string", "enum": ["Red", "Green", "Blue"] },
+                { "type": "null" }
+            ]
+        });
+
+        let flattened = flatten_nullable(&schema, &schema);
+        assert_eq!(
+            flattened.get("description").and_then(|v| v.as_str()),
+            Some("A color")
+        );
+        assert_eq!(
+            flattened.get("type").and_then(|v| v.as_str()),
+            Some("string")
+        );
+        assert_eq!(
+            flattened
+                .get("enum")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn flatten_nullable_keeps_multi_variant_one_of() {
+        let schema = serde_json::json!({
+            "oneOf": [
+                { "type": "string", "enum": ["Red"] },
+                { "type": "string", "enum": ["Green"] },
+                { "type": "string", "enum": ["Blue"] }
+            ]
+        });
+
+        let flattened = flatten_nullable(&schema, &schema);
+        assert!(flattened.get("oneOf").is_some());
     }
 }

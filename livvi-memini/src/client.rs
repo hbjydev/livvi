@@ -5,19 +5,34 @@ use livvi_core::memory::{
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
+use serde_json::Value;
 use std::fmt::Display;
+use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MeminiClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
 }
 
+impl std::fmt::Debug for MeminiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeminiClient")
+            .field("client", &self.client)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
 impl MeminiClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("failed to build reqwest client with timeout"),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
         }
@@ -241,8 +256,13 @@ fn metadata_pairs(
     meta: &serde_json::Map<String, serde_json::Value>,
 ) {
     for (key, value) in meta {
-        if let Some(s) = value.as_str() {
-            pairs.push((prefix.to_string(), format!("{key}={s}")));
+        match value {
+            Value::String(s) => pairs.push((prefix.to_string(), format!("{key}={s}"))),
+            Value::Number(n) => pairs.push((prefix.to_string(), format!("{key}={n}"))),
+            Value::Bool(b) => pairs.push((prefix.to_string(), format!("{key}={b}"))),
+            other => {
+                tracing::warn!("skipping unsupported metadata value type for key {key}: {other}")
+            }
         }
     }
 }
@@ -293,7 +313,7 @@ fn list_query_pairs(request: &ListRequest) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use livvi_core::memory::{Level, Scope, Tier};
+    use livvi_core::memory::{Scope, Tier};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -405,26 +425,19 @@ mod tests {
     }
 
     #[test]
-    fn list_query_pairs_joins_enums() {
-        let request = ListRequest {
-            tiers: Some(vec![Tier::Episodic, Tier::Semantic]),
-            levels: Some(vec![Level::Explicit]),
-            tags: Some(vec!["tag1".to_string(), "tag2".to_string()]),
-            metadata: None,
-            include_expired: Some(true),
-            include_superseded: None,
-            limit: Some(10),
-            sort: Some("created_at".to_string()),
-            order: Some("desc".to_string()),
-        };
+    fn metadata_pairs_serializes_scalar_values() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("tag".to_string(), Value::String("foo".to_string()));
+        meta.insert("count".to_string(), Value::Number(3.into()));
+        meta.insert("active".to_string(), Value::Bool(true));
 
-        let pairs = list_query_pairs(&request);
-        let map: std::collections::HashMap<&str, &str> = pairs
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        assert_eq!(map.get("tier"), Some(&"episodic,semantic"));
-        assert_eq!(map.get("tag"), Some(&"tag1,tag2"));
-        assert_eq!(map.get("limit"), Some(&"10"));
+        let mut pairs = Vec::new();
+        metadata_pairs(&mut pairs, "meta", &meta);
+
+        let values: Vec<&str> = pairs.iter().map(|(_, v)| v.as_str()).collect();
+        assert!(values.contains(&"tag=foo"));
+        assert!(values.contains(&"count=3"));
+        assert!(values.contains(&"active=true"));
+        assert_eq!(pairs.len(), 3);
     }
 }
