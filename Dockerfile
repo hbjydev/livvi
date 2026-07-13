@@ -13,7 +13,6 @@ COPY livvi-lcm/Cargo.toml livvi-lcm/
 COPY livvi-memini/Cargo.toml livvi-memini/
 COPY livvi-openai/Cargo.toml livvi-openai/
 COPY livvi-store/Cargo.toml livvi-store/
-
 RUN mkdir -p \
     livvi-core/src \
     livvi-core-macros/src \
@@ -22,19 +21,20 @@ RUN mkdir -p \
     livvi-lcm/src \
     livvi-memini/src \
     livvi-openai/src \
-    livvi-store/src \
-    && echo 'fn main() {}' > livvi-daemon/src/main.rs \
-    && echo > livvi-core/src/lib.rs \
-    && echo > livvi-core-macros/src/lib.rs \
-    && echo > livvi-discord/src/lib.rs \
-    && echo > livvi-lcm/src/lib.rs \
-    && echo > livvi-memini/src/lib.rs \
-    && echo > livvi-openai/src/lib.rs \
-    && echo > livvi-store/src/lib.rs \
-    && cargo build --release --locked -p livvi-daemon || true
+    livvi-store/src && \
+  echo "fn main() {}" > livvi-discord/src/main.rs && \
+  echo > livvi-core/src/lib.rs && \
+  echo > livvi-core-macros/src/lib.rs && \
+  echo > livvi-daemon/src/lib.rs && \
+  echo > livvi-lcm/src/lib.rs && \
+  echo > livvi-memini/src/lib.rs && \
+  echo > livvi-openai/src/lib.rs && \
+  echo > livvi-store/src/lib.rs
+
+RUN cargo fetch --locked
 
 COPY . .
-RUN cargo build --release --locked -p livvi-daemon
+RUN cargo build --release --locked --offline -p livvi-daemon
 
 FROM rockylinux/rockylinux:10-ubi
 
