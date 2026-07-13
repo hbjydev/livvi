@@ -1,0 +1,13 @@
+.git
+.github
+target
+*.db
+.env
+.env.example
+.mise
+docs
+README.md
+LICENSE
+AGENTS.md
+Dockerfile
+.dockerignore
