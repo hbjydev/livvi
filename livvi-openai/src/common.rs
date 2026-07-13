@@ -12,10 +12,12 @@ pub fn tool_to_function(tool: ToolDefinition) -> Function {
 }
 
 fn schema_to_function_parameters(schema: schemars::Schema) -> FunctionParameters {
-    function_parameters_from_value(schema.as_value())
+    let value = schema.as_value();
+    function_parameters_from_value(value, value)
 }
 
-fn function_parameters_from_value(value: &Value) -> FunctionParameters {
+fn function_parameters_from_value(value: &Value, root: &Value) -> FunctionParameters {
+    let value = normalize_schema(value, root);
     FunctionParameters {
         schema_type: value
             .get("type")
@@ -27,7 +29,7 @@ fn function_parameters_from_value(value: &Value) -> FunctionParameters {
             .map(|props| {
                 props
                     .iter()
-                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v))))
+                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v, root))))
                     .collect()
             }),
         required: value.get("required").and_then(|r| r.as_array()).map(|arr| {
@@ -38,7 +40,8 @@ fn function_parameters_from_value(value: &Value) -> FunctionParameters {
     }
 }
 
-fn json_schema_define_from_value(value: &Value) -> JSONSchemaDefine {
+fn json_schema_define_from_value(value: &Value, root: &Value) -> JSONSchemaDefine {
+    let value = normalize_schema(value, root);
     JSONSchemaDefine {
         schema_type: value.get("type").and_then(json_schema_type_from_value),
         description: value
@@ -55,7 +58,7 @@ fn json_schema_define_from_value(value: &Value) -> JSONSchemaDefine {
             .map(|props| {
                 props
                     .iter()
-                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v))))
+                    .map(|(k, v)| (k.clone(), Box::new(json_schema_define_from_value(v, root))))
                     .collect()
             }),
         required: value.get("required").and_then(|r| r.as_array()).map(|arr| {
@@ -65,8 +68,57 @@ fn json_schema_define_from_value(value: &Value) -> JSONSchemaDefine {
         }),
         items: value
             .get("items")
-            .map(|v| Box::new(json_schema_define_from_value(v))),
+            .map(|v| Box::new(json_schema_define_from_value(v, root))),
     }
+}
+
+fn normalize_schema<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
+    let value = resolve_ref(value, root);
+    flatten_nullable(value, root)
+}
+
+fn resolve_ref<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
+    if let Some(Value::String(ref_path)) = value.get("$ref") {
+        let mut current = root;
+        for part in ref_path.split('/').filter(|p| !p.is_empty() && *p != "#") {
+            if let Some(obj) = current.as_object() {
+                if let Some(next) = obj.get(part) {
+                    current = next;
+                } else {
+                    return value;
+                }
+            } else {
+                return value;
+            }
+        }
+        return current;
+    }
+    value
+}
+
+fn flatten_nullable<'a>(value: &'a Value, root: &'a Value) -> &'a Value {
+    if let Some(obj) = value.as_object()
+        && let Some(any_of) = obj.get("anyOf").or_else(|| obj.get("oneOf"))
+        && let Some(arr) = any_of.as_array()
+    {
+        for v in arr {
+            let v = resolve_ref(v, root);
+            if !is_null_schema(v) {
+                return v;
+            }
+        }
+    }
+    value
+}
+
+fn is_null_schema(value: &Value) -> bool {
+    if let Some(Value::String(s)) = value.get("type") {
+        return s == "null";
+    }
+    if let Some(arr) = value.get("type").and_then(|v| v.as_array()) {
+        return arr.iter().all(|v| v.as_str() == Some("null"));
+    }
+    false
 }
 
 fn json_schema_type_from_value(value: &Value) -> Option<JSONSchemaType> {
@@ -91,6 +143,22 @@ fn json_schema_type_from_value(value: &Value) -> Option<JSONSchemaType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    enum Color {
+        Red,
+        Green,
+        Blue,
+    }
+
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct TagInput {
+        query: String,
+        colors: Option<Vec<Color>>,
+        primary: Option<Color>,
+    }
 
     #[test]
     fn tool_to_function_maps_schemars_schema() {
@@ -123,5 +191,41 @@ mod tests {
         let required = func.parameters.required.expect("expected required");
         assert!(required.contains(&"a".to_string()));
         assert!(required.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn tool_to_function_resolves_enum_refs() {
+        let schema = ToolDefinition {
+            name: "tag".to_string(),
+            description: "Tag stuff".to_string(),
+            input_schema: schemars::schema_for!(TagInput),
+        };
+
+        let func = tool_to_function(schema);
+        let props = func.parameters.properties.expect("expected properties");
+
+        let colors = props.get("colors").expect("expected colors property");
+        assert_eq!(colors.schema_type, Some(JSONSchemaType::Array));
+        let items = colors.items.as_ref().expect("expected items");
+        assert_eq!(items.schema_type, Some(JSONSchemaType::String));
+        assert_eq!(
+            items.enum_values,
+            Some(vec![
+                "Red".to_string(),
+                "Green".to_string(),
+                "Blue".to_string()
+            ])
+        );
+
+        let primary = props.get("primary").expect("expected primary property");
+        assert_eq!(primary.schema_type, Some(JSONSchemaType::String));
+        assert_eq!(
+            primary.enum_values,
+            Some(vec![
+                "Red".to_string(),
+                "Green".to_string(),
+                "Blue".to_string()
+            ])
+        );
     }
 }
