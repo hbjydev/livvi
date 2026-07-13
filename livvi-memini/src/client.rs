@@ -64,7 +64,7 @@ impl MeminiClient {
         namespace: &str,
         home_namespace: Option<&str>,
         request: RememberRequest,
-    ) -> Result<Memory> {
+    ) -> Result<Option<Memory>> {
         let response = self
             .request(
                 reqwest::Method::POST,
@@ -77,7 +77,7 @@ impl MeminiClient {
             .await
             .map_err(|e| anyhow!("failed to send remember request: {e}"))?;
 
-        handle_response(response).await
+        handle_remember_response(response).await
     }
 
     pub async fn recall(
@@ -212,7 +212,7 @@ impl MeminiClient {
         namespace: &str,
         home_namespace: Option<&str>,
         request: UpdateRequest,
-    ) -> Result<Memory> {
+    ) -> Result<Option<Memory>> {
         self.remember(namespace, home_namespace, request.into())
             .await
     }
@@ -220,15 +220,40 @@ impl MeminiClient {
 
 async fn handle_response<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Result<T> {
     let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<failed to read body>".to_string());
+
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Memini request failed ({status}): {text}"));
+        return Err(anyhow!("Memini request failed ({status}): {body}"));
     }
 
-    response
-        .json::<T>()
+    serde_json::from_str::<T>(&body)
+        .with_context(|| format!("failed to parse Memini response: {body}"))
+}
+
+async fn handle_remember_response(response: reqwest::Response) -> Result<Option<Memory>> {
+    let status = response.status();
+    let body = response
+        .text()
         .await
-        .with_context(|| "failed to parse Memini response")
+        .unwrap_or_else(|_| "<failed to read body>".to_string());
+
+    if !status.is_success() {
+        return Err(anyhow!("Memini request failed ({status}): {body}"));
+    }
+
+    let value: Value = serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse Memini response: {body}"))?;
+
+    if value.get("stored").and_then(Value::as_bool) == Some(false) {
+        return Ok(None);
+    }
+
+    let memory: Memory = serde_json::from_value(value)
+        .with_context(|| format!("failed to parse Memini memory response: {body}"))?;
+    Ok(Some(memory))
 }
 
 fn opt(pairs: &mut Vec<(String, String)>, key: &str, value: Option<impl Display>) {
@@ -361,9 +386,46 @@ mod tests {
         let memory = client
             .remember("livvi/conversations/conv-1", None, request)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("memory should be stored");
         assert_eq!(memory.id, "mem-1");
         assert_eq!(memory.tier, Tier::Episodic);
+    }
+
+    #[tokio::test]
+    async fn remember_returns_none_when_low_signal() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({"reason": "low_signal", "stored": false});
+
+        Mock::given(method("POST"))
+            .and(path("/v1/memories"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = MeminiClient::new(server.uri(), "key");
+        let request = RememberRequest {
+            content: "boring turn".to_string(),
+            tier: Tier::Episodic,
+            summary: None,
+            tags: vec!["livvi_turn".to_string()],
+            metadata: serde_json::Map::new(),
+            importance: None,
+            level: None,
+            ttl_seconds: None,
+            id: None,
+            valid_from: None,
+            valid_to: None,
+            confidence: None,
+            visibility: None,
+            about: None,
+        };
+
+        let result = client
+            .remember("livvi/conversations/conv-1", None, request)
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 
     #[tokio::test]

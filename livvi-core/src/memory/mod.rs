@@ -393,14 +393,29 @@ pub struct Memory {
     pub metadata: serde_json::Value,
     #[serde(default)]
     pub importance: f64,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, deserialize_with = "deserialize_iso8601_option")]
     pub created_at: Option<OffsetDateTime>,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, deserialize_with = "deserialize_iso8601_option")]
     pub updated_at: Option<OffsetDateTime>,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, deserialize_with = "deserialize_iso8601_option")]
     pub valid_from: Option<OffsetDateTime>,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, deserialize_with = "deserialize_iso8601_option")]
     pub valid_to: Option<OffsetDateTime>,
+}
+
+fn deserialize_iso8601_option<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<OffsetDateTime>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match time::serde::iso8601::option::deserialize(deserializer) {
+        Ok(dt) => Ok(dt),
+        Err(e) => {
+            tracing::warn!("failed to parse ISO 8601 datetime: {e}");
+            Ok(None)
+        }
+    }
 }
 
 /// A memory returned from recall, with a relevance score and provenance.
@@ -493,21 +508,33 @@ impl Briefing {
 /// Backend-agnostic memory provider.
 #[async_trait]
 pub trait MemoryProvider: Send + Sync + 'static {
-    async fn remember(&self, ctx: MemoryContext, request: RememberRequest) -> Result<Memory>;
+    /// Store a new memory.
+    ///
+    /// Returns `Ok(None)` when the backend chose not to store the memory (e.g. the
+    /// signal was too low to be worth remembering). This is not an error.
+    async fn remember(
+        &self,
+        ctx: MemoryContext,
+        request: RememberRequest,
+    ) -> Result<Option<Memory>>;
     async fn recall(&self, ctx: MemoryContext, request: RecallRequest)
     -> Result<Vec<ScoredMemory>>;
     async fn briefing(&self, ctx: MemoryContext, request: BriefingRequest) -> Result<Briefing>;
     async fn get(&self, ctx: MemoryContext, id: &str) -> Result<Option<Memory>>;
     async fn list(&self, ctx: MemoryContext, request: ListRequest) -> Result<Vec<Memory>>;
     async fn forget(&self, ctx: MemoryContext, id: &str) -> Result<()>;
-    async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> Result<Memory>;
+    async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> Result<Option<Memory>>;
 
     fn clone_dyn(&self) -> Box<dyn MemoryProvider>;
 }
 
 #[async_trait]
 impl MemoryProvider for Box<dyn MemoryProvider> {
-    async fn remember(&self, ctx: MemoryContext, request: RememberRequest) -> Result<Memory> {
+    async fn remember(
+        &self,
+        ctx: MemoryContext,
+        request: RememberRequest,
+    ) -> Result<Option<Memory>> {
         self.as_ref().remember(ctx, request).await
     }
 
@@ -535,7 +562,7 @@ impl MemoryProvider for Box<dyn MemoryProvider> {
         self.as_ref().forget(ctx, id).await
     }
 
-    async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> Result<Memory> {
+    async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> Result<Option<Memory>> {
         self.as_ref().update(ctx, request).await
     }
 
@@ -615,7 +642,8 @@ mod tests {
             .validate(&person_value)
             .expect("person string should validate");
 
-        let conversation_value = serde_json::json!("conversation:647f75c2-0c7f-438e-8e95-f1606390c4de");
+        let conversation_value =
+            serde_json::json!("conversation:647f75c2-0c7f-438e-8e95-f1606390c4de");
         validator
             .validate(&conversation_value)
             .expect("conversation string should validate");
@@ -637,5 +665,22 @@ mod tests {
         validator
             .validate(&value)
             .expect("remember request with about person should validate");
+    }
+
+    #[test]
+    fn memory_parses_despite_unexpected_datetime_format() {
+        let value = serde_json::json!({
+            "id": "mem-1",
+            "namespace": "test",
+            "content": "hello",
+            "tier": "episodic",
+            "created_at": "not-a-valid-iso8601-timestamp",
+            "updated_at": null
+        });
+
+        let memory: Memory = serde_json::from_value(value).expect("memory should parse");
+        assert_eq!(memory.id, "mem-1");
+        assert!(memory.created_at.is_none());
+        assert!(memory.updated_at.is_none());
     }
 }

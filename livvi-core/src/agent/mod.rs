@@ -260,6 +260,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_nudges_when_required_tool_not_used() {
+        use crate::tool::tool;
+
+        #[tool(is_required = true)]
+        async fn required_tool() -> Result<(), ()> {
+            Ok(())
+        }
+
+        let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
+        let mut toolbox = Toolbox::<()>::new();
+        toolbox.add_tool(required_tool);
+
+        let (_input_tx, input_rx) = mpsc::channel(4);
+        let (_rx, mut agent) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_input(input_rx)
+            .with_state(())
+            .with_toolbox(toolbox)
+            .with_soul("test soul".to_string())
+            .with_compactor(WindowCompactor::default())
+            .build()
+            .unwrap();
+
+        let mut ctx = crate::context::Context::new("soul", Some("test".into()));
+        agent
+            .run_turn(Interrupt::message("hello"), &mut ctx, &"test".into())
+            .await
+            .unwrap();
+
+        let nudges = ctx
+            .turns
+            .iter()
+            .filter(|m| {
+                m.role == crate::model::Role::User
+                    && m.content
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("System reminder")
+            })
+            .count();
+
+        assert_eq!(nudges, 2, "expected two nudges before giving up");
+    }
+
+    #[tokio::test]
     async fn agent_keeps_per_conversation_contexts_independent() {
         let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
         let toolbox = Toolbox::<()>::new();

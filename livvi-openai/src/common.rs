@@ -201,6 +201,7 @@ mod tests {
             name: "calc".to_string(),
             description: "Adds two numbers".to_string(),
             input_schema: schemars::schema_for!(CalcInput),
+            is_required: false,
         };
 
         let func = tool_to_function(schema);
@@ -227,6 +228,7 @@ mod tests {
             name: "tag".to_string(),
             description: "Tag stuff".to_string(),
             input_schema: schemars::schema_for!(TagInput),
+            is_required: false,
         };
 
         let func = tool_to_function(schema);

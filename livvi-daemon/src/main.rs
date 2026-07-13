@@ -48,7 +48,7 @@ impl MemoryProvider for NoopMemoryProvider {
         &self,
         _ctx: livvi_core::memory::MemoryContext,
         _request: livvi_core::memory::RememberRequest,
-    ) -> anyhow::Result<livvi_core::memory::Memory> {
+    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
         Err(anyhow::anyhow!("memory provider not configured"))
     }
 
@@ -104,7 +104,7 @@ impl MemoryProvider for NoopMemoryProvider {
         &self,
         _ctx: livvi_core::memory::MemoryContext,
         _request: livvi_core::memory::UpdateRequest,
-    ) -> anyhow::Result<livvi_core::memory::Memory> {
+    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
         Err(anyhow::anyhow!("memory provider not configured"))
     }
 

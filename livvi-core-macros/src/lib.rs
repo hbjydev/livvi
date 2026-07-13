@@ -29,6 +29,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
         .description
         .or_else(|| extract_doc_comment(&input_fn.attrs))
         .unwrap_or_default();
+    let is_required = args.is_required.unwrap_or(false);
 
     let input_type = find_input_type(&input_fn.sig.inputs)?;
     let state_bounds = find_state_bounds(&input_fn.sig.inputs)?;
@@ -57,6 +58,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
                         name: #tool_name.to_string(),
                         description: #description.to_string(),
                         input_schema: #crate_path::schemars::schema_for!(#input_type),
+                        is_required: #is_required,
                     }
                 }
 
@@ -79,6 +81,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
                         name: #tool_name.to_string(),
                         description: #description.to_string(),
                         input_schema: #crate_path::schemars::schema_for!(#input_type),
+                        is_required: #is_required,
                     }
                 }
 
@@ -106,6 +109,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
 struct ToolArgs {
     name: Option<String>,
     description: Option<String>,
+    is_required: Option<bool>,
 }
 
 impl ToolArgs {
@@ -113,6 +117,7 @@ impl ToolArgs {
         ToolArgs {
             name: None,
             description: None,
+            is_required: None,
         }
     }
 }
@@ -134,15 +139,36 @@ fn parse_tool_args(args: &proc_macro2::TokenStream) -> ToolArgs {
         if let Meta::NameValue(MetaNameValue { path, value, .. }) = meta
             && let Some(key) = path.get_ident()
         {
-            let value = match value {
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) => s.value(),
-                _ => continue,
-            };
             match key.to_string().as_str() {
-                "name" => result.name = Some(value),
-                "description" => result.description = Some(value),
+                "name" => {
+                    if let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = value
+                    {
+                        result.name = Some(s.value());
+                    }
+                }
+                "description" => {
+                    if let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = value
+                    {
+                        result.description = Some(s.value());
+                    }
+                }
+                "is_required" => match value {
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Bool(b), ..
+                    }) => result.is_required = Some(b.value()),
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) => {
+                        if let Ok(b) = s.value().parse::<bool>() {
+                            result.is_required = Some(b);
+                        }
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }

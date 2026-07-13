@@ -21,6 +21,7 @@ const TOK_STREAM_BUFFER_SIZE: usize = 256;
 const MEMORY_BRIEFING_TIMEOUT: Duration = Duration::from_secs(3);
 const MEMORY_REMEMBER_TIMEOUT: Duration = Duration::from_secs(10);
 const TURN_MEMORY_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+const MAX_NUDGES: usize = 2;
 struct StreamIteration {
     response: String,
     thinking: String,
@@ -40,6 +41,8 @@ impl<S: Sync + Send + 'static> Agent<S> {
         let mut tool_iterations = 0usize;
         const MAX_TOOL_ITERATIONS: usize = 20;
         let mut stashed_interrupt = None;
+        let mut required_tool_used = false;
+        let mut nudge_count = 0;
         let user_content;
 
         info!("Running turn with interrupt: {:?}", interrupt);
@@ -115,6 +118,14 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
             let had_tool_calls = !tool_calls.is_empty();
 
+            let current_iteration_used_required_tool = tool_calls.iter().any(|call| {
+                self.toolbox
+                    .get_tool(&call.name)
+                    .map(|tool| tool.schema().is_required)
+                    .unwrap_or(false)
+            });
+            required_tool_used |= current_iteration_used_required_tool;
+
             if had_tool_calls && tool_iterations < MAX_TOOL_ITERATIONS {
                 tool_iterations += 1;
 
@@ -173,6 +184,20 @@ impl<S: Sync + Send + 'static> Agent<S> {
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking),
                 );
             }
+
+            if !required_tool_used && nudge_count < MAX_NUDGES {
+                let required_names = self.toolbox.required_tool_names();
+                if !required_names.is_empty() {
+                    let nudge = format!(
+                        "System reminder: this turn requires using one of the following tools before you can complete: {}. Please make the appropriate tool call now.",
+                        required_names.join(", ")
+                    );
+                    context.push_user(nudge, None);
+                    nudge_count += 1;
+                    continue;
+                }
+            }
+
             break Some(iteration_response);
         };
 
@@ -222,7 +247,8 @@ impl<S: Sync + Send + 'static> Agent<S> {
             let provider = provider.clone_dyn();
             tokio::spawn(async move {
                 match timeout(MEMORY_REMEMBER_TIMEOUT, provider.remember(mem_ctx, request)).await {
-                    Ok(Ok(_)) => {}
+                    Ok(Ok(Some(_))) => {}
+                    Ok(Ok(None)) => tracing::debug!("turn not stored in memory: low signal"),
                     Ok(Err(e)) => tracing::warn!("failed to capture turn in memory: {e}"),
                     Err(_) => tracing::warn!("memory capture timed out"),
                 }

@@ -241,10 +241,11 @@ pub async fn memory_remember(
         about: input.about,
     };
 
-    memory
-        .remember(ctx, request)
-        .await
-        .map_err(|e| format!("memory remember failed: {e}"))
+    match memory.remember(ctx, request).await {
+        Ok(Some(memory)) => Ok(memory),
+        Ok(None) => Err("memory not stored: signal too low".to_string()),
+        Err(e) => Err(format!("memory remember failed: {e}")),
+    }
 }
 
 /// Get a structured briefing of durable facts, procedures, and pinned memories.
@@ -348,10 +349,11 @@ pub async fn memory_update(
         about: input.about,
     };
 
-    memory
-        .update(ctx, request)
-        .await
-        .map_err(|e| format!("memory update failed: {e}"))
+    match memory.update(ctx, request).await {
+        Ok(Some(memory)) => Ok(memory),
+        Ok(None) => Err("memory update not stored: signal too low".to_string()),
+        Err(e) => Err(format!("memory update failed: {e}")),
+    }
 }
 
 /// Delete a memory by its unique ID.

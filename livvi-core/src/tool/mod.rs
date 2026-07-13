@@ -184,6 +184,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: schemars::Schema,
+    pub is_required: bool,
 }
 
 /// Implemented by the generated wrapper for a `#[tool]` function.
@@ -227,6 +228,15 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
             .collect()
     }
 
+    /// The names of all registered tools that are marked as required.
+    pub fn required_tool_names(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter(|(_, tool)| tool.schema().is_required)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Add a tool to the registry.
     ///
     /// The tool is typically a `#[tool]` function; the macro generates a wrapper struct that
@@ -250,5 +260,48 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
 impl<S: Send + Sync + 'static> Default for Toolbox<S> {
     fn default() -> Self {
         Toolbox::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(schemars::JsonSchema, serde::Deserialize)]
+    struct DummyInput;
+
+    #[livvi_core_macros::tool(is_required = true)]
+    async fn required_tool(_input: Input<DummyInput>) -> Result<(), ()> {
+        Ok(())
+    }
+
+    #[livvi_core_macros::tool]
+    async fn optional_tool(_input: Input<DummyInput>) -> Result<(), ()> {
+        Ok(())
+    }
+
+    #[test]
+    fn required_tool_names_returns_only_required_tools() {
+        let mut toolbox = Toolbox::<()>::new();
+        toolbox.add_tool(required_tool);
+        toolbox.add_tool(optional_tool);
+
+        assert_eq!(
+            toolbox.required_tool_names(),
+            vec!["required_tool".to_string()]
+        );
+    }
+
+    #[test]
+    fn required_tool_flag_is_set_in_schema() {
+        let mut toolbox = Toolbox::<()>::new();
+        toolbox.add_tool(required_tool);
+        toolbox.add_tool(optional_tool);
+
+        let required = toolbox.get_tool("required_tool").unwrap().schema();
+        assert!(required.is_required);
+
+        let optional = toolbox.get_tool("optional_tool").unwrap().schema();
+        assert!(!optional.is_required);
     }
 }

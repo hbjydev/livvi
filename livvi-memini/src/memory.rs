@@ -58,7 +58,7 @@ impl MemoryProvider for MeminiMemoryProvider {
         &self,
         ctx: MemoryContext,
         request: RememberRequest,
-    ) -> anyhow::Result<Memory> {
+    ) -> anyhow::Result<Option<Memory>> {
         self.client
             .remember(
                 &self.namespace_for(&ctx.about),
@@ -126,7 +126,11 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
-    async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> anyhow::Result<Memory> {
+    async fn update(
+        &self,
+        ctx: MemoryContext,
+        request: UpdateRequest,
+    ) -> anyhow::Result<Option<Memory>> {
         self.client
             .update(
                 &self.namespace_for(&ctx.about),
