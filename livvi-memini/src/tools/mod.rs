@@ -8,38 +8,23 @@ use livvi_core::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-fn base_namespace() -> String {
-    std::env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string())
-}
-
-fn namespace_for_about(base_namespace: &str, about: &About) -> String {
-    match about {
-        About::Person(person_id) => format!("{base_namespace}/persons/{person_id}"),
-        About::Conversation(conversation_id) => {
-            format!("{base_namespace}/conversations/{conversation_id}")
-        }
-        About::Global => base_namespace.to_string(),
-    }
-}
-
-fn memory_context_for_about(
-    base_namespace: &str,
-    about: Option<&About>,
-    tool_context: &livvi_core::context::Context,
-) -> MemoryContext {
-    let mut ctx = MemoryContext::from_tool_context(base_namespace, tool_context);
-    if let Some(about) = about {
-        ctx.namespace = namespace_for_about(base_namespace, about);
-    }
-    ctx
-}
-
 fn default_scope_full() -> Option<Scope> {
     Some(Scope::Full)
 }
 
 fn default_tier_semantic() -> Tier {
     Tier::Semantic
+}
+
+fn memory_context_for_about(
+    about: Option<&About>,
+    tool_context: &livvi_core::context::Context,
+) -> MemoryContext {
+    let mut ctx = MemoryContext::from_tool_context(tool_context);
+    if let Some(about) = about {
+        ctx.about = about.clone();
+    }
+    ctx
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -145,7 +130,7 @@ pub async fn memory_recall(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Vec<ScoredMemory>, String> {
-    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
+    let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
     let request = RecallRequest {
         query: input.query,
         tiers: input.tiers,
@@ -178,7 +163,7 @@ pub async fn memory_remember(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
-    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
+    let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
     let request = RememberRequest {
         content: input.content,
         tier: input.tier,
@@ -209,7 +194,7 @@ pub async fn memory_briefing(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Briefing, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = MemoryContext::from_tool_context(agent_context);
     let request = BriefingRequest {
         per_section: input.per_section,
         per_section_pinned: None,
@@ -233,7 +218,7 @@ pub async fn memory_get(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Option<Memory>, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = MemoryContext::from_tool_context(agent_context);
     memory
         .get(ctx, &input.id)
         .await
@@ -247,7 +232,7 @@ pub async fn memory_list(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Vec<Memory>, String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = MemoryContext::from_tool_context(agent_context);
     let request = ListRequest {
         tiers: input.tiers,
         levels: input.levels,
@@ -273,7 +258,7 @@ pub async fn memory_update(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
-    let ctx = memory_context_for_about(&base_namespace(), input.about.as_ref(), agent_context);
+    let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
     let request = UpdateRequest {
         id: input.id,
         content: input.content,
@@ -304,7 +289,7 @@ pub async fn memory_forget(
     State(memory): State<'_, dyn MemoryProvider>,
     Context(agent_context): Context<'_>,
 ) -> Result<(), String> {
-    let ctx = MemoryContext::from_tool_context(&base_namespace(), agent_context);
+    let ctx = MemoryContext::from_tool_context(agent_context);
     memory
         .forget(ctx, &input.id)
         .await
@@ -342,7 +327,11 @@ mod tests {
         ctx.push_assistant("hi", None::<String>);
         ctx.push_user("again", Some(PersonId::from("person-2")));
 
-        let mem_ctx = MemoryContext::from_tool_context("livvi", &ctx);
-        assert_eq!(mem_ctx.person_id, Some(PersonId::from("person-2")));
+        let mem_ctx = MemoryContext::from_tool_context(&ctx);
+        assert_eq!(
+            mem_ctx.about,
+            About::Conversation(ConversationId::from("conv-1"))
+        );
+        assert_eq!(mem_ctx.caller, Some(PersonId::from("person-2")));
     }
 }

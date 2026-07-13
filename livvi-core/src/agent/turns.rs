@@ -8,7 +8,7 @@ use crate::{
     context::Context,
     context::wrap_scratchpad,
     interrupt::Interrupt,
-    memory::{BriefingRequest, MemoryContext, RememberRequest, Scope, Tier},
+    memory::{About, BriefingRequest, MemoryContext, RememberRequest, Scope, Tier},
     model::Message,
     model::ToolCall,
     provider::ProviderEvent,
@@ -32,7 +32,6 @@ impl<S: Sync + Send + 'static> Agent<S> {
         interrupt: Interrupt,
         context: &mut Context,
         conversation_id: &livvi_store::ConversationId,
-        memory_namespace: &str,
     ) -> Result<Option<Interrupt>> {
         let mut tool_iterations = 0usize;
         const MAX_TOOL_ITERATIONS: usize = 20;
@@ -59,8 +58,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
             if context.turns.is_empty()
                 && let Some(provider) = self.memory_provider.as_deref()
             {
-                let mem_ctx =
-                    MemoryContext::new(memory_namespace, conversation_id, event.person_id.as_ref());
+                let mem_ctx = MemoryContext::new(
+                    About::Conversation(conversation_id.clone()),
+                    event.person_id.clone(),
+                );
                 let request = BriefingRequest {
                     per_section: None,
                     per_section_pinned: None,
@@ -176,8 +177,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
         if let Some(provider) = self.memory_provider.as_deref()
             && !user_content.is_empty()
         {
-            let mem_ctx =
-                MemoryContext::new(memory_namespace, conversation_id, event.person_id.as_ref());
+            let mem_ctx = MemoryContext::new(
+                About::Conversation(conversation_id.clone()),
+                event.person_id.clone(),
+            );
             let mut metadata = serde_json::Map::new();
             metadata.insert(
                 "source".to_string(),

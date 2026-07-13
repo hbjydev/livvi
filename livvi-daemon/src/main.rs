@@ -160,10 +160,10 @@ async fn main() -> Result<()> {
 
     let memini_configured = memini_base_url.is_some();
     let memory_provider: Arc<dyn MemoryProvider> = match memini_base_url {
-        Some(base_url) => Arc::new(MeminiMemoryProvider::new(livvi_memini::MeminiClient::new(
-            base_url,
-            memini_api_key,
-        ))),
+        Some(base_url) => Arc::new(MeminiMemoryProvider::new(
+            livvi_memini::MeminiClient::new(base_url, memini_api_key),
+            &memini_namespace,
+        )),
         None => Arc::new(NoopMemoryProvider),
     };
 
@@ -232,9 +232,7 @@ async fn main() -> Result<()> {
         .with_compactor(compactor);
 
     if let Some(memory_provider) = memory_for_agent {
-        builder = builder
-            .with_memory_provider(memory_provider)
-            .with_memory_namespace(&memini_namespace);
+        builder = builder.with_memory_provider(memory_provider);
     }
 
     let (_agent_events, agent) = builder.build()?;

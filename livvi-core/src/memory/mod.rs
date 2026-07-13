@@ -2,67 +2,44 @@ use std::{fmt, str::FromStr};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use livvi_store::{ConversationId, PersonId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-/// Provenance and namespace information for a memory operation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub use livvi_store::{ConversationId, PersonId};
+
+/// Provenance and scope for a memory operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryContext {
-    /// The primary Memini namespace for the operation (e.g. `livvi/conversations/<id>`).
-    pub namespace: String,
-    /// The caller's home namespace (e.g. `livvi/persons/<id>`), used for `visibility: personal`.
-    pub home_namespace: Option<String>,
-    /// The canonical person associated with the operation, if known.
-    pub person_id: Option<PersonId>,
-    /// The canonical conversation associated with the operation, if known.
-    pub conversation_id: Option<ConversationId>,
+    /// The target scope of the operation.
+    pub about: About,
+    /// The person initiating the operation, if known.
+    pub caller: Option<PersonId>,
 }
 
 impl MemoryContext {
-    /// Build a `MemoryContext` directly from the namespace components.
-    pub fn new(
-        base_namespace: &str,
-        conversation_id: &ConversationId,
-        person_id: Option<&PersonId>,
-    ) -> Self {
-        let namespace = format!("{base_namespace}/conversations/{conversation_id}");
-        let home_namespace = person_id.map(|p| format!("{base_namespace}/persons/{p}"));
-        Self {
-            namespace,
-            home_namespace,
-            person_id: person_id.cloned(),
-            conversation_id: Some(conversation_id.clone()),
-        }
+    /// Build a `MemoryContext` for a specific target and caller.
+    pub fn new(about: About, caller: Option<PersonId>) -> Self {
+        Self { about, caller }
     }
 
     /// Build a `MemoryContext` from the current agent conversation context.
     ///
-    /// The conversation namespace is derived from `conversation_id` and the person namespace
-    /// from the most recent user message that carries a `person_id`.
-    pub fn from_tool_context(base_namespace: &str, context: &crate::context::Context) -> Self {
-        let conversation_id = context
+    /// Defaults the target scope to the current conversation and the caller to the
+    /// most recent user message that carries a `person_id`.
+    pub fn from_tool_context(context: &crate::context::Context) -> Self {
+        let about = context
             .conversation_id
             .clone()
-            .unwrap_or_else(|| ConversationId::from("global"));
-        let person_id = context
+            .map(About::Conversation)
+            .unwrap_or(About::Global);
+        let caller = context
             .turns
             .iter()
             .rev()
             .find(|m| matches!(m.role, crate::model::Role::User))
             .and_then(|m| m.person_id.clone());
 
-        let namespace = format!("{base_namespace}/conversations/{conversation_id}");
-        let home_namespace = person_id
-            .as_ref()
-            .map(|p| format!("{base_namespace}/persons/{p}"));
-
-        Self {
-            namespace,
-            home_namespace,
-            person_id,
-            conversation_id: Some(conversation_id),
-        }
+        Self { about, caller }
     }
 }
 
@@ -528,12 +505,11 @@ mod tests {
         let mut ctx = crate::context::Context::new("soul", Some(ConversationId::from("conv-1")));
         ctx.push_user("hello", Some(PersonId::from("person-1")));
 
-        let mem_ctx = MemoryContext::from_tool_context("livvi", &ctx);
-        assert_eq!(mem_ctx.namespace, "livvi/conversations/conv-1");
+        let mem_ctx = MemoryContext::from_tool_context(&ctx);
         assert_eq!(
-            mem_ctx.home_namespace,
-            Some("livvi/persons/person-1".to_string())
+            mem_ctx.about,
+            About::Conversation(ConversationId::from("conv-1"))
         );
-        assert_eq!(mem_ctx.person_id, Some(PersonId::from("person-1")));
+        assert_eq!(mem_ctx.caller, Some(PersonId::from("person-1")));
     }
 }

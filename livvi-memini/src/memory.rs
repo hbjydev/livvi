@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use livvi_core::memory::{
-    Briefing, BriefingRequest, ListRequest, Memory, MemoryContext, MemoryProvider, RecallRequest,
-    RememberRequest, ScoredMemory, UpdateRequest,
+    About, Briefing, BriefingRequest, ListRequest, Memory, MemoryContext, MemoryProvider, PersonId,
+    RecallRequest, RememberRequest, ScoredMemory, UpdateRequest,
 };
 
 use crate::client::MeminiClient;
@@ -10,11 +10,15 @@ use crate::client::MeminiClient;
 #[derive(Debug, Clone)]
 pub struct MeminiMemoryProvider {
     client: MeminiClient,
+    base_namespace: String,
 }
 
 impl MeminiMemoryProvider {
-    pub fn new(client: MeminiClient) -> Self {
-        Self { client }
+    pub fn new(client: MeminiClient, base_namespace: impl Into<String>) -> Self {
+        Self {
+            client,
+            base_namespace: base_namespace.into(),
+        }
     }
 
     pub fn from_env() -> Option<Self> {
@@ -24,7 +28,27 @@ impl MeminiMemoryProvider {
         let api_key = std::env::var("MEMINI_API_KEY")
             .or_else(|_| std::env::var("MEMINI_TOKEN"))
             .unwrap_or_default();
-        Some(Self::new(MeminiClient::new(base_url, api_key)))
+        let base_namespace = std::env::var("MEMINI_NAMESPACE")
+            .or_else(|_| std::env::var("LIVVI_MEMINI_NAMESPACE"))
+            .unwrap_or_else(|_| "livvi".to_string());
+        Some(Self::new(
+            MeminiClient::new(base_url, api_key),
+            base_namespace,
+        ))
+    }
+
+    fn namespace_for(&self, about: &About) -> String {
+        match about {
+            About::Person(person_id) => format!("{}/persons/{}", self.base_namespace, person_id),
+            About::Conversation(conversation_id) => {
+                format!("{}/conversations/{}", self.base_namespace, conversation_id)
+            }
+            About::Global => self.base_namespace.clone(),
+        }
+    }
+
+    fn home_namespace_for(&self, caller: Option<&PersonId>) -> Option<String> {
+        caller.map(|person_id| format!("{}/persons/{}", self.base_namespace, person_id))
     }
 }
 
@@ -36,7 +60,11 @@ impl MemoryProvider for MeminiMemoryProvider {
         request: RememberRequest,
     ) -> anyhow::Result<Memory> {
         self.client
-            .remember(&ctx.namespace, ctx.home_namespace.as_deref(), request)
+            .remember(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                request,
+            )
             .await
     }
 
@@ -46,7 +74,11 @@ impl MemoryProvider for MeminiMemoryProvider {
         request: RecallRequest,
     ) -> anyhow::Result<Vec<ScoredMemory>> {
         self.client
-            .recall(&ctx.namespace, ctx.home_namespace.as_deref(), request)
+            .recall(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                request,
+            )
             .await
     }
 
@@ -56,31 +88,51 @@ impl MemoryProvider for MeminiMemoryProvider {
         request: BriefingRequest,
     ) -> anyhow::Result<Briefing> {
         self.client
-            .briefing(&ctx.namespace, ctx.home_namespace.as_deref(), request)
+            .briefing(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                request,
+            )
             .await
     }
 
     async fn get(&self, ctx: MemoryContext, id: &str) -> anyhow::Result<Option<Memory>> {
         self.client
-            .get(&ctx.namespace, ctx.home_namespace.as_deref(), id)
+            .get(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                id,
+            )
             .await
     }
 
     async fn list(&self, ctx: MemoryContext, request: ListRequest) -> anyhow::Result<Vec<Memory>> {
         self.client
-            .list(&ctx.namespace, ctx.home_namespace.as_deref(), request)
+            .list(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                request,
+            )
             .await
     }
 
     async fn forget(&self, ctx: MemoryContext, id: &str) -> anyhow::Result<()> {
         self.client
-            .forget(&ctx.namespace, ctx.home_namespace.as_deref(), id)
+            .forget(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                id,
+            )
             .await
     }
 
     async fn update(&self, ctx: MemoryContext, request: UpdateRequest) -> anyhow::Result<Memory> {
         self.client
-            .update(&ctx.namespace, ctx.home_namespace.as_deref(), request)
+            .update(
+                &self.namespace_for(&ctx.about),
+                self.home_namespace_for(ctx.caller.as_ref()).as_deref(),
+                request,
+            )
             .await
     }
 
