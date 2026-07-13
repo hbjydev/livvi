@@ -11,6 +11,7 @@ authors.workspace = true
 anyhow.workspace = true
 livvi-core.workspace = true
 livvi-discord.workspace = true
+livvi-lcm.workspace = true
 livvi-openai.workspace = true
 livvi-store = { workspace = true, features = ["sqlite"] }
 serde_json.workspace = true

@@ -1,11 +1,12 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use anyhow::{Result, anyhow};
+use livvi_store::ConversationId;
+use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt,
-    tool::Toolbox,
+    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt, tool::Toolbox,
 };
 
 mod interrupts;
@@ -116,13 +117,33 @@ impl<S: Sync + Send + 'static> Agent<S> {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut ctx = Context::new(format!("{}", self.soul));
+        let context_lru_capacity = std::env::var("LIVVI_AGENT_CONTEXT_LRU_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .and_then(NonZeroUsize::new)
+            .unwrap_or(NonZeroUsize::new(1024).unwrap());
+        let mut contexts: LruCache<ConversationId, Context> = LruCache::new(context_lru_capacity);
 
         tracing::info!("Agent started running, beginning loop...");
         loop {
             match self.input.recv().await {
                 Some(interrupt) => {
-                    self.handle_interrupt(interrupt, &mut ctx).await?;
+                    let mut next_interrupt = Some(interrupt);
+                    while let Some(interrupt) = next_interrupt {
+                        let conversation_id = match &interrupt {
+                            Interrupt::ExternalEvent(event) => event
+                                .conversation_id
+                                .clone()
+                                .unwrap_or_else(|| ConversationId::from("global")),
+                        };
+                        let soul = self.soul.clone();
+                        let ctx = contexts.get_or_insert_mut(conversation_id.clone(), || {
+                            Context::new(soul, Some(conversation_id.clone()))
+                        });
+                        next_interrupt = self
+                            .handle_interrupt(interrupt, ctx, &conversation_id)
+                            .await?;
+                    }
                 }
                 None => {
                     tracing::warn!("Agent input channel disconnected, exiting loop.");
@@ -140,12 +161,15 @@ mod tests {
     use super::*;
     use crate::{
         compaction::{Compactor, WindowCompactor},
-        interrupt::Interrupt,
+        interrupt::{ExternalEvent, Interrupt},
         model::Message,
         provider::{MockProvider, ProviderEvent},
         tool::Toolbox,
     };
+    use anyhow::Result;
+    use async_trait::async_trait;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -153,10 +177,38 @@ mod tests {
         calls: Arc<Mutex<Vec<usize>>>,
     }
 
+    #[derive(Default)]
+    struct ConversationRecordingCompactor {
+        calls: Arc<Mutex<Vec<(String, usize)>>>,
+    }
+
+    #[async_trait]
     impl Compactor for RecordingCompactor {
-        fn compact(&self, messages: &[Message]) -> Vec<Message> {
+        async fn compact(
+            &self,
+            messages: &[Message],
+            _conversation_id: &livvi_store::ConversationId,
+        ) -> Result<Vec<Message>> {
             self.calls.lock().push(messages.len());
-            WindowCompactor::default().compact(messages)
+            Ok(WindowCompactor::default()
+                .compact(messages, _conversation_id)
+                .await?)
+        }
+    }
+
+    #[async_trait]
+    impl Compactor for ConversationRecordingCompactor {
+        async fn compact(
+            &self,
+            messages: &[Message],
+            conversation_id: &livvi_store::ConversationId,
+        ) -> Result<Vec<Message>> {
+            self.calls
+                .lock()
+                .push((conversation_id.0.clone(), messages.len()));
+            Ok(WindowCompactor::default()
+                .compact(messages, conversation_id)
+                .await?)
         }
     }
 
@@ -181,18 +233,86 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut ctx = crate::context::Context::new("soul");
+        let mut ctx = crate::context::Context::new("soul", Some("test".into()));
         agent
-            .run_turn(Interrupt::message("hello"), &mut ctx)
+            .run_turn(Interrupt::message("hello"), &mut ctx, &"test".into())
             .await
             .unwrap();
         agent
-            .run_turn(Interrupt::message("world"), &mut ctx)
+            .run_turn(Interrupt::message("world"), &mut ctx, &"test".into())
             .await
             .unwrap();
 
         let calls = calls.lock();
         assert_eq!(calls.len(), 2);
         assert!(calls.iter().all(|&n| n > 0));
+    }
+
+    #[tokio::test]
+    async fn agent_keeps_per_conversation_contexts_independent() {
+        let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
+        let toolbox = Toolbox::<()>::new();
+        let (_input_tx, input_rx) = mpsc::channel(4);
+
+        let compactor = ConversationRecordingCompactor::default();
+        let calls = compactor.calls.clone();
+
+        let (_rx, mut agent) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_input(input_rx)
+            .with_state(())
+            .with_toolbox(toolbox)
+            .with_soul("test soul".to_string())
+            .with_compactor(compactor)
+            .build()
+            .unwrap();
+
+        let mut contexts: HashMap<ConversationId, Context> = HashMap::new();
+        for (content, conv_id) in [("hello A", "A"), ("hello B", "B"), ("hello A again", "A")] {
+            let conversation_id = ConversationId::from(conv_id);
+            let interrupt = Interrupt::ExternalEvent(ExternalEvent {
+                transport_kind: "internal".to_string(),
+                event_type: "message".to_string(),
+                content: Some(content.to_string()),
+                author: crate::interrupt::ExternalAuthor {
+                    transport_kind: "internal".to_string(),
+                    transport_id: "user".to_string(),
+                    display_name: None,
+                    metadata: serde_json::Value::Null,
+                },
+                conversation: crate::interrupt::ExternalConversation {
+                    transport_kind: "internal".to_string(),
+                    transport_id: conv_id.to_string(),
+                    display_name: None,
+                    metadata: serde_json::Value::Null,
+                },
+                person_id: None,
+                conversation_id: Some(conversation_id.clone()),
+                metadata: serde_json::Value::Null,
+                timestamp: None,
+            });
+            let ctx = contexts
+                .entry(conversation_id.clone())
+                .or_insert_with(|| Context::new("test soul", Some(conversation_id.clone())));
+            agent
+                .handle_interrupt(interrupt, ctx, &conversation_id)
+                .await
+                .unwrap();
+        }
+
+        let calls = calls.lock();
+        let a_calls: Vec<usize> = calls
+            .iter()
+            .filter(|(id, _)| id == "A")
+            .map(|(_, count)| *count)
+            .collect();
+        let b_calls: Vec<usize> = calls
+            .iter()
+            .filter(|(id, _)| id == "B")
+            .map(|(_, count)| *count)
+            .collect();
+
+        assert_eq!(a_calls, vec![1, 3]);
+        assert_eq!(b_calls, vec![1]);
     }
 }

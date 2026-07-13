@@ -12,6 +12,7 @@ pub mod compaction;
 pub mod context;
 pub mod interrupt;
 pub mod model;
+pub mod summarizer;
 
 #[derive(Debug, Clone)]
 /// An event emitted by the agent during its operation. This enum captures

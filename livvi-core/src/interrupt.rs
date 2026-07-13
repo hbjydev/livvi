@@ -45,8 +45,7 @@ pub struct ExternalEvent {
 
 impl Debug for ExternalEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f
-            .debug_struct("ExternalEvent")
+        f.debug_struct("ExternalEvent")
             .field("transport", &self.transport_kind)
             .field("type", &self.event_type)
             .field("author", &self.person_id)
