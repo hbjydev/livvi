@@ -1,5 +1,5 @@
 [package]
-name = "livvi-store"
+name = "livvi-memini"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -10,15 +10,16 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+livvi-core.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-schemars.workspace = true
-sqlx = { workspace = true, optional = true }
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 
-[features]
-default = []
-sqlite = ["dep:sqlx"]
+[dev-dependencies]
+tokio.workspace = true
+wiremock = "0.6"
+livvi-store.workspace = true

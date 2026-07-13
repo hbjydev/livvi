@@ -6,7 +6,8 @@ use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt, tool::Toolbox,
+    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt,
+    memory::MemoryProvider, tool::Toolbox,
 };
 
 mod interrupts;
@@ -20,6 +21,7 @@ pub struct AgentBuilder<S: Sync + Send + 'static> {
     soul: Option<String>,
     toolbox: Option<Toolbox<S>>,
     compactor: Option<Box<dyn Compactor>>,
+    memory_provider: Option<Box<dyn MemoryProvider>>,
 }
 
 impl<S: Sync + Send + 'static> Default for AgentBuilder<S> {
@@ -37,6 +39,7 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             soul: None,
             toolbox: None,
             compactor: None,
+            memory_provider: None,
         }
     }
 
@@ -70,6 +73,11 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         self
     }
 
+    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Self {
+        self.memory_provider = Some(Box::new(provider));
+        self
+    }
+
     pub fn build(self) -> Result<(broadcast::Receiver<AgentEvent>, Agent<S>)> {
         let provider = self.provider.ok_or(anyhow!("Provider is required"))?;
         let state = self.state.ok_or(anyhow!("State is required"))?;
@@ -96,6 +104,7 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
                 toolbox,
                 soul,
                 compactor,
+                memory_provider: self.memory_provider,
             },
         ))
     }
@@ -109,6 +118,7 @@ pub struct Agent<S: Sync + Send + 'static> {
     toolbox: Toolbox<S>,
     soul: String,
     compactor: Box<dyn Compactor>,
+    memory_provider: Option<Box<dyn MemoryProvider>>,
 }
 
 impl<S: Sync + Send + 'static> Agent<S> {

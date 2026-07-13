@@ -11,6 +11,7 @@ pub mod tool;
 pub mod compaction;
 pub mod context;
 pub mod interrupt;
+pub mod memory;
 pub mod model;
 pub mod summarizer;
 

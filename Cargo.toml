@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["livvi-core", "livvi-core-macros", "livvi-daemon", "livvi-discord", "livvi-lcm", "livvi-openai", "livvi-store"]
+members = ["livvi-core", "livvi-core-macros", "livvi-daemon", "livvi-discord", "livvi-lcm", "livvi-memini", "livvi-openai", "livvi-store"]
 
 [workspace.package]
 edition = "2024"
@@ -22,7 +22,7 @@ serde_json = "1"
 jsonschema = "0.46"
 lru = "0.16.3"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "migrate", "time"] }
-time = { version = "0.3", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
@@ -37,6 +37,7 @@ livvi-core = { path = "livvi-core" }
 livvi-core-macros = { path = "livvi-core-macros" }
 livvi-discord = { path = "livvi-discord" }
 livvi-lcm = { path = "livvi-lcm" }
+livvi-memini = { path = "livvi-memini" }
 livvi-openai = { path = "livvi-openai" }
 livvi-store = { path = "livvi-store", default-features = false }
 
