@@ -87,6 +87,7 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             .ok_or(anyhow!("Input mpsc receiver is required"))?;
 
         let soul = self.soul.ok_or(anyhow!("Soul is required"))?;
+        let soul = format!("{}\n\n{}", soul, crate::memory::MEMORY_INSTRUCTIONS);
 
         let compactor = self
             .compactor

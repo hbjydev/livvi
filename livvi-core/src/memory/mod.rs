@@ -7,6 +7,13 @@ use time::OffsetDateTime;
 
 pub use livvi_store::{ConversationId, PersonId};
 
+/// Agent-facing instructions for the memory system.
+///
+/// These instructions are always loaded into the agent's system prompt so that
+/// memory tools are discoverable and used consistently, regardless of which
+/// transport or persona is in use.
+pub const MEMORY_INSTRUCTIONS: &str = include_str!("instructions.md");
+
 /// Provenance and scope for a memory operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryContext {
@@ -44,12 +51,65 @@ impl MemoryContext {
 }
 
 /// Internal scope selector for memory operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
+///
+/// `About` tells a memory tool which person, conversation, or global scope to target.
+/// When serialized as JSON, it is a single string: `"global"`, `"person:<id>"`, or
+/// `"conversation:<id>"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum About {
+    /// Target a specific person by their canonical person ID.
     Person(PersonId),
+    /// Target a specific conversation by its canonical conversation ID.
     Conversation(ConversationId),
+    /// Target the global scope, i.e. memories not tied to a person or conversation.
     Global,
+}
+
+impl Serialize for About {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            About::Global => serializer.serialize_str("global"),
+            About::Person(id) => serializer.serialize_str(&format!("person:{id}")),
+            About::Conversation(id) => serializer.serialize_str(&format!("conversation:{id}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for About {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value == "global" {
+            Ok(About::Global)
+        } else if let Some(id) = value.strip_prefix("person:") {
+            Ok(About::Person(PersonId(id.to_string())))
+        } else if let Some(id) = value.strip_prefix("conversation:") {
+            Ok(About::Conversation(ConversationId(id.to_string())))
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "invalid About value: {value}. expected 'global', 'person:<id>' or 'conversation:<id>'"
+            )))
+        }
+    }
+}
+
+impl schemars::JsonSchema for About {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "About".into()
+    }
+
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        serde_json::from_value(serde_json::json!({
+            "description": "Scope selector for a memory operation. Use 'global' for everyone, 'person:<id>' for a specific person, or 'conversation:<id>' for a specific conversation.",
+            "type": "string"
+        }))
+        .expect("About schema is valid")
+    }
 }
 
 /// Tier of a memory.
@@ -511,5 +571,71 @@ mod tests {
             About::Conversation(ConversationId::from("conv-1"))
         );
         assert_eq!(mem_ctx.caller, Some(PersonId::from("person-1")));
+    }
+
+    #[test]
+    fn about_deserializes_person_string() {
+        let value = serde_json::json!("person:c257674e-835a-457b-abb7-9ce6259e4f37");
+        let about: About = serde_json::from_value(value).expect("should deserialize person string");
+        assert_eq!(
+            about,
+            About::Person(PersonId::from("c257674e-835a-457b-abb7-9ce6259e4f37"))
+        );
+    }
+
+    #[test]
+    fn about_serializes_to_string() {
+        assert_eq!(
+            serde_json::to_value(About::Person(PersonId::from(
+                "c257674e-835a-457b-abb7-9ce6259e4f37"
+            )))
+            .unwrap(),
+            serde_json::json!("person:c257674e-835a-457b-abb7-9ce6259e4f37")
+        );
+        assert_eq!(
+            serde_json::to_value(About::Conversation(ConversationId::from(
+                "647f75c2-0c7f-438e-8e95-f1606390c4de"
+            )))
+            .unwrap(),
+            serde_json::json!("conversation:647f75c2-0c7f-438e-8e95-f1606390c4de")
+        );
+        assert_eq!(
+            serde_json::to_value(About::Global).unwrap(),
+            serde_json::json!("global")
+        );
+    }
+
+    #[test]
+    fn about_string_validates_against_schema() {
+        let schema = schemars::schema_for!(About);
+        let validator = jsonschema::validator_for(schema.as_value()).unwrap();
+
+        let person_value = serde_json::json!("person:c257674e-835a-457b-abb7-9ce6259e4f37");
+        validator
+            .validate(&person_value)
+            .expect("person string should validate");
+
+        let conversation_value = serde_json::json!("conversation:647f75c2-0c7f-438e-8e95-f1606390c4de");
+        validator
+            .validate(&conversation_value)
+            .expect("conversation string should validate");
+
+        let global_value = serde_json::json!("global");
+        validator
+            .validate(&global_value)
+            .expect("global string should validate");
+    }
+
+    #[test]
+    fn remember_request_with_about_person_validates() {
+        let schema = schemars::schema_for!(RememberRequest);
+        let validator = jsonschema::validator_for(schema.as_value()).unwrap();
+        let value = serde_json::json!({
+            "content": "a memory",
+            "about": "person:c257674e-835a-457b-abb7-9ce6259e4f37"
+        });
+        validator
+            .validate(&value)
+            .expect("remember request with about person should validate");
     }
 }
