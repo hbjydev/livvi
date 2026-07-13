@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["livvi-core", "livvi-core-macros", "livvi-daemon", "livvi-discord", "livvi-lcm", "livvi-openai", "livvi-store"]
+members = ["livvi-core", "livvi-core-macros", "livvi-daemon", "livvi-discord", "livvi-lcm", "livvi-memini", "livvi-openai", "livvi-store"]
 
 [workspace.package]
 edition = "2024"
@@ -37,6 +37,7 @@ livvi-core = { path = "livvi-core" }
 livvi-core-macros = { path = "livvi-core-macros" }
 livvi-discord = { path = "livvi-discord" }
 livvi-lcm = { path = "livvi-lcm" }
+livvi-memini = { path = "livvi-memini" }
 livvi-openai = { path = "livvi-openai" }
 livvi-store = { path = "livvi-store", default-features = false }
 

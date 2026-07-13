@@ -6,7 +6,8 @@ use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt, tool::Toolbox,
+    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt,
+    memory::MemoryProvider, tool::Toolbox,
 };
 
 mod interrupts;
@@ -20,6 +21,8 @@ pub struct AgentBuilder<S: Sync + Send + 'static> {
     soul: Option<String>,
     toolbox: Option<Toolbox<S>>,
     compactor: Option<Box<dyn Compactor>>,
+    memory_provider: Option<Box<dyn MemoryProvider>>,
+    memory_namespace: Option<String>,
 }
 
 impl<S: Sync + Send + 'static> Default for AgentBuilder<S> {
@@ -37,6 +40,8 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             soul: None,
             toolbox: None,
             compactor: None,
+            memory_provider: None,
+            memory_namespace: None,
         }
     }
 
@@ -70,6 +75,16 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         self
     }
 
+    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Self {
+        self.memory_provider = Some(Box::new(provider));
+        self
+    }
+
+    pub fn with_memory_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.memory_namespace = Some(namespace.into());
+        self
+    }
+
     pub fn build(self) -> Result<(broadcast::Receiver<AgentEvent>, Agent<S>)> {
         let provider = self.provider.ok_or(anyhow!("Provider is required"))?;
         let state = self.state.ok_or(anyhow!("State is required"))?;
@@ -84,6 +99,8 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             .compactor
             .unwrap_or_else(|| Box::new(crate::compaction::WindowCompactor::default()));
 
+        let memory_namespace = self.memory_namespace.unwrap_or_else(|| "livvi".to_string());
+
         let (tx, rx) = broadcast::channel(256);
 
         Ok((
@@ -96,6 +113,8 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
                 toolbox,
                 soul,
                 compactor,
+                memory_provider: self.memory_provider,
+                memory_namespace,
             },
         ))
     }
@@ -109,6 +128,8 @@ pub struct Agent<S: Sync + Send + 'static> {
     toolbox: Toolbox<S>,
     soul: String,
     compactor: Box<dyn Compactor>,
+    memory_provider: Option<Box<dyn MemoryProvider>>,
+    memory_namespace: String,
 }
 
 impl<S: Sync + Send + 'static> Agent<S> {
@@ -123,6 +144,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
             .and_then(NonZeroUsize::new)
             .unwrap_or(NonZeroUsize::new(1024).unwrap());
         let mut contexts: LruCache<ConversationId, Context> = LruCache::new(context_lru_capacity);
+        let memory_namespace = self.memory_namespace.clone();
 
         tracing::info!("Agent started running, beginning loop...");
         loop {
@@ -141,7 +163,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                             Context::new(soul, Some(conversation_id.clone()))
                         });
                         next_interrupt = self
-                            .handle_interrupt(interrupt, ctx, &conversation_id)
+                            .handle_interrupt(interrupt, ctx, &conversation_id, &memory_namespace)
                             .await?;
                     }
                 }
@@ -235,11 +257,21 @@ mod tests {
 
         let mut ctx = crate::context::Context::new("soul", Some("test".into()));
         agent
-            .run_turn(Interrupt::message("hello"), &mut ctx, &"test".into())
+            .run_turn(
+                Interrupt::message("hello"),
+                &mut ctx,
+                &"test".into(),
+                "livvi",
+            )
             .await
             .unwrap();
         agent
-            .run_turn(Interrupt::message("world"), &mut ctx, &"test".into())
+            .run_turn(
+                Interrupt::message("world"),
+                &mut ctx,
+                &"test".into(),
+                "livvi",
+            )
             .await
             .unwrap();
 
@@ -295,7 +327,7 @@ mod tests {
                 .entry(conversation_id.clone())
                 .or_insert_with(|| Context::new("test soul", Some(conversation_id.clone())));
             agent
-                .handle_interrupt(interrupt, ctx, &conversation_id)
+                .handle_interrupt(interrupt, ctx, &conversation_id, "livvi")
                 .await
                 .unwrap();
         }

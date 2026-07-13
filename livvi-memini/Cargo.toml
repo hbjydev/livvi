@@ -1,5 +1,5 @@
 [package]
-name = "livvi-daemon"
+name = "livvi-memini"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,17 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 livvi-core.workspace = true
-livvi-discord.workspace = true
-livvi-lcm.workspace = true
-livvi-memini.workspace = true
-livvi-openai.workspace = true
-livvi-store = { workspace = true, features = ["sqlite"] }
+reqwest = { workspace = true, features = ["json"] }
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock = "0.6"
+livvi-store.workspace = true

@@ -1,20 +1,117 @@
 use anyhow::Result;
 use livvi_core::{
     agent::Agent,
+    async_trait,
     compaction::WindowCompactor,
     interrupt::{ExternalEvent, Interrupt},
+    memory::MemoryProvider,
     summarizer::Summarizer,
     tool::Toolbox,
 };
 use livvi_discord::tools::{discord_react, discord_send};
 use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
 use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
+use livvi_memini::MeminiMemoryProvider;
+use livvi_memini::tools::{
+    memory_briefing, memory_forget, memory_get, memory_list, memory_recall, memory_remember,
+    memory_update,
+};
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
 use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
+
+pub struct AppState {
+    pub discord: DiscordState,
+    pub memory: Arc<dyn MemoryProvider>,
+}
+
+impl AsRef<DiscordState> for AppState {
+    fn as_ref(&self) -> &DiscordState {
+        &self.discord
+    }
+}
+
+impl AsRef<dyn MemoryProvider> for AppState {
+    fn as_ref(&self) -> &dyn MemoryProvider {
+        &*self.memory
+    }
+}
+
+struct NoopMemoryProvider;
+
+#[async_trait]
+impl MemoryProvider for NoopMemoryProvider {
+    async fn remember(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _request: livvi_core::memory::RememberRequest,
+    ) -> anyhow::Result<livvi_core::memory::Memory> {
+        Err(anyhow::anyhow!("memory provider not configured"))
+    }
+
+    async fn recall(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _request: livvi_core::memory::RecallRequest,
+    ) -> anyhow::Result<Vec<livvi_core::memory::ScoredMemory>> {
+        Ok(vec![])
+    }
+
+    async fn briefing(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _request: livvi_core::memory::BriefingRequest,
+    ) -> anyhow::Result<livvi_core::memory::Briefing> {
+        Ok(livvi_core::memory::Briefing {
+            namespace: String::new(),
+            scope_header: None,
+            facts: vec![],
+            procedures: vec![],
+            recent: vec![],
+            pinned: vec![],
+            children: None,
+        })
+    }
+
+    async fn get(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _id: &str,
+    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
+        Ok(None)
+    }
+
+    async fn list(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _request: livvi_core::memory::ListRequest,
+    ) -> anyhow::Result<Vec<livvi_core::memory::Memory>> {
+        Ok(vec![])
+    }
+
+    async fn forget(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _id: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update(
+        &self,
+        _ctx: livvi_core::memory::MemoryContext,
+        _request: livvi_core::memory::UpdateRequest,
+    ) -> anyhow::Result<livvi_core::memory::Memory> {
+        Err(anyhow::anyhow!("memory provider not configured"))
+    }
+
+    fn clone_dyn(&self) -> Box<dyn MemoryProvider> {
+        Box::new(NoopMemoryProvider)
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,6 +128,11 @@ async fn main() -> Result<()> {
         env::var("LIVVI_OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let openai_base_url = env::var("LIVVI_OPENAI_API_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+
+    let memini_base_url = env::var("LIVVI_MEMINI_BASE_URL").ok();
+    let memini_api_key = env::var("LIVVI_MEMINI_API_KEY").unwrap_or_default();
+    let memini_namespace =
+        env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string());
 
     // Without a Discord token there is no way to feed the agent loop, so just
     // wait for a shutdown signal.
@@ -55,6 +157,20 @@ async fn main() -> Result<()> {
 
     let discord_state = Arc::new(DiscordState::new(&discord_token));
     let transport = DiscordTransport::new(&discord_token, raw_tx).await?;
+
+    let memini_configured = memini_base_url.is_some();
+    let memory_provider: Arc<dyn MemoryProvider> = match memini_base_url {
+        Some(base_url) => Arc::new(MeminiMemoryProvider::new(livvi_memini::MeminiClient::new(
+            base_url,
+            memini_api_key,
+        ))),
+        None => Arc::new(NoopMemoryProvider),
+    };
+
+    let app_state = AppState {
+        discord: (*discord_state).clone(),
+        memory: memory_provider,
+    };
 
     let (provider, compactor): (
         Box<dyn livvi_core::provider::Provider>,
@@ -87,13 +203,24 @@ async fn main() -> Result<()> {
         }
     };
 
-    let (_agent_events, agent) = Agent::builder()
+    let memory_for_agent = memini_configured.then(|| app_state.memory.clone_dyn());
+
+    let mut builder = Agent::builder()
         .with_provider(provider)
-        .with_state(Arc::clone(&discord_state))
+        .with_state(app_state)
         .with_toolbox({
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
             toolbox.add_tool(discord_react);
+            if memini_configured {
+                toolbox.add_tool(memory_recall);
+                toolbox.add_tool(memory_remember);
+                toolbox.add_tool(memory_briefing);
+                toolbox.add_tool(memory_get);
+                toolbox.add_tool(memory_list);
+                toolbox.add_tool(memory_update);
+                toolbox.add_tool(memory_forget);
+            }
             toolbox
         })
         .with_soul(format!(
@@ -102,8 +229,15 @@ async fn main() -> Result<()> {
             DISCORD_INSTRUCTIONS
         ))
         .with_input(resolved_rx)
-        .with_compactor(compactor)
-        .build()?;
+        .with_compactor(compactor);
+
+    if let Some(memory_provider) = memory_for_agent {
+        builder = builder
+            .with_memory_provider(memory_provider)
+            .with_memory_namespace(&memini_namespace);
+    }
+
+    let (_agent_events, agent) = builder.build()?;
 
     let agent_handle = tokio::spawn(async move {
         if let Err(e) = agent.run().await {

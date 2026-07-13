@@ -112,9 +112,9 @@ where
 /// `T` is the target type, extracted from the context's state via [`AsRef`]. The function
 /// parameter looks like `State(state): State<AppState>` where the agent's state is, for example,
 /// `Arc<AppState>`.
-pub struct State<'a, T>(pub &'a T);
+pub struct State<'a, T: ?Sized>(pub &'a T);
 
-impl<'a, S, T> FromToolContext<'a, S> for State<'a, T>
+impl<'a, S, T: ?Sized> FromToolContext<'a, S> for State<'a, T>
 where
     S: AsRef<T>,
 {

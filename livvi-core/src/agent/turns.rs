@@ -3,8 +3,16 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::{
-    AgentEvent, agent::Agent, context::Context, context::wrap_scratchpad, interrupt::Interrupt,
-    model::ToolCall, provider::ProviderEvent, tool::ToolContext,
+    AgentEvent,
+    agent::Agent,
+    context::Context,
+    context::wrap_scratchpad,
+    interrupt::Interrupt,
+    memory::{BriefingRequest, MemoryContext, RememberRequest, Scope, Tier},
+    model::Message,
+    model::ToolCall,
+    provider::ProviderEvent,
+    tool::ToolContext,
 };
 
 const TOK_STREAM_BUFFER_SIZE: usize = 256;
@@ -24,10 +32,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
         interrupt: Interrupt,
         context: &mut Context,
         conversation_id: &livvi_store::ConversationId,
+        memory_namespace: &str,
     ) -> Result<Option<Interrupt>> {
         let mut tool_iterations = 0usize;
         const MAX_TOOL_ITERATIONS: usize = 20;
         let mut stashed_interrupt = None;
+        let mut user_content = String::new();
 
         info!("Running turn with interrupt: {:?}", interrupt);
         let _ = self.output.send(AgentEvent::Started);
@@ -44,12 +54,39 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
         let Interrupt::ExternalEvent(event) = &interrupt;
         if event.content.is_some() {
-            context.push_user(event.to_xml_message(), event.person_id.clone());
+            user_content = event.to_xml_message();
+
+            if context.turns.is_empty()
+                && let Some(provider) = self.memory_provider.as_deref()
+            {
+                let mem_ctx =
+                    MemoryContext::new(memory_namespace, conversation_id, event.person_id.as_ref());
+                let request = BriefingRequest {
+                    per_section: None,
+                    per_section_pinned: None,
+                    per_section_facts: None,
+                    per_section_procedures: None,
+                    per_section_recent: None,
+                    scope: Some(Scope::Full),
+                    namespaces: None,
+                };
+                match provider.briefing(mem_ctx, request).await {
+                    Ok(briefing) => {
+                        let prompt = briefing.to_system_prompt();
+                        if !prompt.is_empty() {
+                            context.system.push(Message::system(prompt));
+                        }
+                    }
+                    Err(e) => tracing::warn!("memory briefing failed: {e}"),
+                }
+            }
+
+            context.push_user(user_content.clone(), event.person_id.clone());
         }
 
         context.compact(&*self.compactor, conversation_id).await;
 
-        loop {
+        let final_response = loop {
             let StreamIteration {
                 response: iteration_response,
                 thinking: iteration_thinking,
@@ -123,7 +160,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 let error_content = format!("error: {err_msg}");
                 context.push_assistant(error_content, None);
                 let _ = self.output.send(AgentEvent::Done);
-                break;
+                break Some(iteration_response);
             }
 
             let has_final_text = !iteration_response.is_empty();
@@ -133,8 +170,51 @@ impl<S: Sync + Send + 'static> Agent<S> {
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking),
                 );
             }
+            break Some(iteration_response);
+        };
 
-            break;
+        if let Some(provider) = self.memory_provider.as_deref()
+            && !user_content.is_empty()
+        {
+            let mem_ctx =
+                MemoryContext::new(memory_namespace, conversation_id, event.person_id.as_ref());
+            let mut metadata = serde_json::Map::new();
+            metadata.insert(
+                "source".to_string(),
+                serde_json::Value::String("livvi_turn_capture".to_string()),
+            );
+            if let Some(person_id) = &event.person_id {
+                metadata.insert(
+                    "person_id".to_string(),
+                    serde_json::Value::String(person_id.to_string()),
+                );
+            }
+            metadata.insert(
+                "conversation_id".to_string(),
+                serde_json::Value::String(conversation_id.to_string()),
+            );
+            let content = format!(
+                "User:\n{user_content}\n\nAssistant:\n{}",
+                final_response.as_deref().unwrap_or("")
+            );
+            let request = RememberRequest {
+                content,
+                tier: Tier::Episodic,
+                summary: None,
+                tags: vec!["livvi_turn".to_string(), "turn".to_string()],
+                metadata,
+                importance: None,
+                level: None,
+                ttl_seconds: None,
+                id: None,
+                valid_from: None,
+                valid_to: None,
+                confidence: None,
+                visibility: None,
+            };
+            if let Err(e) = provider.remember(mem_ctx, request).await {
+                tracing::warn!("failed to capture turn in memory: {e}");
+            }
         }
 
         let _ = self.output.send(AgentEvent::Done);
