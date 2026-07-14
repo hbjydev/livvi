@@ -298,6 +298,9 @@ impl<S: Sync + Send + 'static> Agent<S> {
         Ok(stashed_interrupt)
     }
 
+    #[tracing::instrument(skip(self, ctx, stashed_interrupt), fields(
+        otel.name = "stream_iteration",
+    ))]
     async fn stream_iteration(
         &mut self,
         ctx: &mut Context,
@@ -308,7 +311,13 @@ impl<S: Sync + Send + 'static> Agent<S> {
         let msgs = ctx.as_messages();
         let tool_schemas = self.toolbox.schemas();
         let stream_task =
-            tokio::spawn(async move { provider.stream(tok_tx, msgs, tool_schemas).await });
+            tokio::spawn(async move {
+                provider.stream(tok_tx, msgs, tool_schemas).await
+            })
+                .instrument(tracing::info_span!(
+                    "provider_stream",
+                    gen_ai.operation.name = "stream_provider"
+                ));
 
         let mut response = String::new();
         let mut thinking = String::new();
