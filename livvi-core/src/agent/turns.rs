@@ -158,8 +158,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
                             memory_provider: self.memory_provider.as_deref(),
                         };
 
+                        let tool_span_name = format!("execute_tool {}", tool_call.name);
                         let tool_span = tracing::info_span!(
                             "tool_call",
+                            otel.name = %tool_span_name,
                             gen_ai.operation.name = "execute_tool",
                             gen_ai.tool.name = %tool_call.name,
                             gen_ai.tool.call.id = %tool_call.id,
@@ -288,7 +290,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                     Ok(Err(e)) => tracing::warn!("failed to capture turn in memory: {e}"),
                     Err(_) => tracing::warn!("memory capture timed out"),
                 }
-            });
+            }.in_current_span());
         }
 
         let _ = self.output.send(AgentEvent::Done);
