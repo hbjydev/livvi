@@ -59,6 +59,7 @@ impl MeminiClient {
         builder
     }
 
+    #[tracing::instrument(skip(self, request))]
     pub async fn remember(
         &self,
         namespace: &str,
@@ -80,6 +81,7 @@ impl MeminiClient {
         handle_remember_response(response).await
     }
 
+    #[tracing::instrument(skip(self, request))]
     pub async fn recall(
         &self,
         namespace: &str,
@@ -107,6 +109,7 @@ impl MeminiClient {
         Ok(body.results)
     }
 
+    #[tracing::instrument(skip(self, request))]
     pub async fn briefing(
         &self,
         namespace: &str,
@@ -129,6 +132,7 @@ impl MeminiClient {
         handle_response(response).await
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn get(
         &self,
         namespace: &str,
@@ -153,6 +157,7 @@ impl MeminiClient {
         handle_response(response).await.map(Some)
     }
 
+    #[tracing::instrument(skip(self, request))]
     pub async fn list(
         &self,
         namespace: &str,
@@ -181,6 +186,7 @@ impl MeminiClient {
         Ok(body.memories)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn forget(
         &self,
         namespace: &str,
@@ -207,6 +213,7 @@ impl MeminiClient {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, request))]
     pub async fn update(
         &self,
         namespace: &str,

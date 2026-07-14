@@ -46,12 +46,24 @@ impl Provider for OpenAIChatCompletionsProvider {
         Box::new(self.clone())
     }
 
+    #[tracing::instrument(
+        skip(self, tx, messages, tool_schemas),
+        fields(
+            otel.name = tracing::field::Empty,
+            gen_ai.operation.name = "text_completion",
+            gen_ai.request.model = self.model_name,
+            gen_ai.request.stream = true,
+        )
+    )]
     async fn stream(
         &mut self,
         tx: mpsc::Sender<ProviderEvent>,
         messages: Vec<Message>,
         tool_schemas: HashMap<String, ToolDefinition>,
     ) -> Result<()> {
+        let otel_name = format!("text_completion {}", self.model_name);
+        tracing::Span::current().record("otel.name", otel_name);
+
         let mut chat_messages = vec![];
         for msg in messages {
             chat_messages.extend(into_openai_chat_completion(msg));
@@ -204,6 +216,14 @@ impl Provider for OpenAIChatCompletionsProvider {
 
 #[async_trait]
 impl Summarizer for OpenAIChatCompletionsProvider {
+    #[tracing::instrument(
+        skip(self, prompt),
+        fields(
+            otel.name = "summarize {self.model_name}",
+            otel.gen_ai.operation.name = "text_completion",
+            otel.gen_ai.request.model = self.model_name,
+        )
+    )]
     async fn summarize(&self, prompt: Vec<Message>) -> Result<String> {
         let chat_messages: Vec<ChatCompletionMessage> = prompt
             .into_iter()

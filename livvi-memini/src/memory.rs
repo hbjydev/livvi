@@ -54,6 +54,7 @@ impl MeminiMemoryProvider {
 
 #[async_trait]
 impl MemoryProvider for MeminiMemoryProvider {
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "create_memory", gen_ai.operation.name = "create_memory"))]
     async fn remember(
         &self,
         ctx: MemoryContext,
@@ -68,6 +69,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "recall_memory", gen_ai.operation.name = "search_memory"))]
     async fn recall(
         &self,
         ctx: MemoryContext,
@@ -82,6 +84,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "briefing_memory", gen_ai.operation.name = "search_memory"))]
     async fn briefing(
         &self,
         ctx: MemoryContext,
@@ -96,6 +99,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "get_memory", gen_ai.operation.name = "search_memory"))]
     async fn get(&self, ctx: MemoryContext, id: &str) -> anyhow::Result<Option<Memory>> {
         self.client
             .get(
@@ -106,6 +110,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "list_memory", gen_ai.operation.name = "search_memory"))]
     async fn list(&self, ctx: MemoryContext, request: ListRequest) -> anyhow::Result<Vec<Memory>> {
         self.client
             .list(
@@ -116,6 +121,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "delete_memory", gen_ai.operation.name = "delete_memory"))]
     async fn forget(&self, ctx: MemoryContext, id: &str) -> anyhow::Result<()> {
         self.client
             .forget(
@@ -126,6 +132,7 @@ impl MemoryProvider for MeminiMemoryProvider {
             .await
     }
 
+    #[tracing::instrument(skip(self, ctx), fields(otel.name = "update_memory", gen_ai.operation.name = "update_memory"))]
     async fn update(
         &self,
         ctx: MemoryContext,

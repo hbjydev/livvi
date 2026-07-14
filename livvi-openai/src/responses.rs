@@ -57,6 +57,15 @@ impl Provider for OpenAIResponsesProvider {
         Box::new(self.clone())
     }
 
+    #[tracing::instrument(
+        skip(self, tx, messages, tools),
+        fields(
+            otel.name = tracing::field::Empty,
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = self.model_name,
+            gen_ai.request.stream = true,
+        )
+    )]
     async fn stream(
         &mut self,
         tx: mpsc::Sender<ProviderEvent>,
@@ -129,6 +138,7 @@ fn tool_to_responses(tool: livvi_core::tool::ToolDefinition) -> openai_api_rs::v
     })
 }
 
+#[tracing::instrument]
 fn provider_events_from_openai(
     evt: ResponseStreamEvent,
     accumulators: &mut HashMap<String, ToolCallAccumulator>,
