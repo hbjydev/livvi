@@ -23,6 +23,14 @@ impl DiscordState {
 
     /// Send a message to a Discord channel, optionally replying to another
     /// message.
+    #[tracing::instrument(
+        skip(self, message),
+        fields(
+            otel.name = "discord.send_message",
+            channel_id = channel_id,
+            reply_to_message_id = ?reply_to_message_id,
+        ),
+    )]
     pub async fn send_message(
         &self,
         message: impl AsRef<str>,
@@ -44,6 +52,12 @@ impl DiscordState {
     }
 
     /// Send a reaction to a Discord message.
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            otel.name = "discord.send_reaction",
+        ),
+    )]
     pub async fn send_reaction(
         &self,
         channel_id: u64,

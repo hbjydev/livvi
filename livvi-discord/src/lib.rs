@@ -18,6 +18,14 @@ struct Handler {
 
 #[serenity::async_trait]
 impl EventHandler for Handler {
+    #[tracing::instrument(
+        skip(self, _ctx, msg),
+        fields(
+            otel.name = "discord.recv_message",
+            channel_id = %msg.channel_id,
+            author_id = %msg.author.id,
+        )
+    )]
     async fn message(&self, _ctx: Context, msg: Message) {
         let current_user_id = match _ctx.http().get_current_user().await {
             Ok(user) => user.id,
