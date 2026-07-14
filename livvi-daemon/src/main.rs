@@ -225,11 +225,19 @@ fn init_tracing() -> Result<()> {
 
     let otel_layer = tracing_opentelemetry::layer().with_tracer(global::tracer("livvi"));
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_ansi(std::io::stderr().is_terminal())
-        .compact()
-        .pretty();
+    let log_format = env::var("LIVVI_LOG_FORMAT").unwrap_or_default();
+    let fmt_layer: Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync> =
+        if log_format.eq_ignore_ascii_case("json") {
+            Box::new(tracing_subscriber::fmt::layer().json())
+        } else {
+            Box::new(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_ansi(std::io::stderr().is_terminal())
+                    .compact()
+                    .pretty(),
+            )
+        };
 
     tracing_subscriber::registry()
         .with(fmt_layer)
