@@ -46,7 +46,7 @@ impl EventHandler for Handler {
         let event = Interrupt::external_event(livvi_core::interrupt::ExternalEvent {
             transport_kind: "discord".to_string(),
             event_type: "message".to_string(),
-            content: Some(msg.content),
+            content: Some(msg.clone().content),
             author: livvi_core::interrupt::ExternalAuthor {
                 transport_kind: "discord".to_string(),
                 transport_id: msg.author.id.to_string(),
@@ -68,7 +68,15 @@ impl EventHandler for Handler {
             },
             person_id: None,
             conversation_id: None,
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({
+                "context": if msg.mentions_me(_ctx.http).await.unwrap_or(false) {
+                    "mention"
+                } else if msg.guild_id.is_some() {
+                    "guild"
+                } else {
+                    "dm"
+                }
+            }),
             timestamp: Some(time::OffsetDateTime::now_utc()),
         });
 

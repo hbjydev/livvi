@@ -87,7 +87,13 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             .ok_or(anyhow!("Input mpsc receiver is required"))?;
 
         let soul = self.soul.ok_or(anyhow!("Soul is required"))?;
-        let soul = format!("{}\n\n{}", soul, crate::memory::MEMORY_INSTRUCTIONS);
+        let soul = format!(
+            "{}\n\n{}\n\n{}\n\n{}",
+            soul,
+            include_str!("../../prompts/scratchpad.md"),
+            include_str!("../../prompts/input-event-loop.md"),
+            include_str!("../../prompts/memory.md")
+        );
 
         let compactor = self
             .compactor

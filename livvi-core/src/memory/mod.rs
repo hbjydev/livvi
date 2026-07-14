@@ -7,13 +7,6 @@ use time::OffsetDateTime;
 
 pub use livvi_store::{ConversationId, PersonId};
 
-/// Agent-facing instructions for the memory system.
-///
-/// These instructions are always loaded into the agent's system prompt so that
-/// memory tools are discoverable and used consistently, regardless of which
-/// transport or persona is in use.
-pub const MEMORY_INSTRUCTIONS: &str = include_str!("instructions.md");
-
 /// Provenance and scope for a memory operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryContext {
