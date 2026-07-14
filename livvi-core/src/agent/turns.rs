@@ -166,10 +166,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                             gen_ai.tool.call.arguments = %tool_call.input,
                         );
 
-                        let result = tool
-                            .call(&ctx, tool_call.input)
-                            .instrument(tool_span)
-                            .await;
+                        let result = tool.call(&ctx, tool_call.input).instrument(tool_span).await;
 
                         let tool_result = result.into_tool_result(&tool_call.id);
 
@@ -217,7 +214,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
             if !required_tool_used && nudge_count < MAX_NUDGES {
                 let required_names = self.toolbox.required_tool_names();
                 if !required_names.is_empty() {
-                    tracing::warn!("no required tool used in this turn, nudging to use one of: {:?}", required_names);
+                    tracing::warn!(
+                        "no required tool used in this turn, nudging to use one of: {:?}",
+                        required_names
+                    );
                     let nudge = format!(
                         "System reminder: this turn requires using one of the following tools before you can complete: {}. Please make the appropriate tool call now.",
                         required_names.join(", ")
