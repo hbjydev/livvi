@@ -206,9 +206,7 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing() -> Result<()> {
-    let resource = Resource::builder()
-        .with_service_name("livvi")
-        .build();
+    let resource = Resource::builder().with_service_name("livvi").build();
 
     let span_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
@@ -227,8 +225,7 @@ fn init_tracing() -> Result<()> {
         .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
         .from_env_lossy();
 
-    let otel_layer = tracing_opentelemetry::layer()
-        .with_tracer(global::tracer("livvi"));
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(global::tracer("livvi"));
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
