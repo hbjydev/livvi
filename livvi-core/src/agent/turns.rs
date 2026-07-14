@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::info;
+use tracing::{Instrument, info};
 
 use crate::{
     AgentEvent,
@@ -157,7 +157,17 @@ impl<S: Sync + Send + 'static> Agent<S> {
                             memory_provider: self.memory_provider.as_deref(),
                         };
 
-                        let result = tool.call(&ctx, tool_call.input).await;
+                        let tool_span = tracing::info_span!(
+                            "tool_call",
+                            tool_name = %tool_call.name,
+                            tool_call_id = %tool_call.id
+                        );
+
+                        let result = tool
+                            .call(&ctx, tool_call.input)
+                            .instrument(tool_span)
+                            .await;
+
                         let tool_result = result.into_tool_result(&tool_call.id);
 
                         info!(
