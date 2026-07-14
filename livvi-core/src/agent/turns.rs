@@ -32,6 +32,7 @@ struct StreamIteration {
 
 impl<S: Sync + Send + 'static> Agent<S> {
     #[tracing::instrument(skip(self, interrupt, context, conversation_id), fields(
+        otel.name = "invoke_agent",
         conversation_id = %conversation_id,
         interrupt = %interrupt
     ))]
@@ -159,8 +160,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
                         let tool_span = tracing::info_span!(
                             "tool_call",
-                            tool_name = %tool_call.name,
-                            tool_call_id = %tool_call.id
+                            gen_ai.operation.name = "execute_tool",
+                            gen_ai.tool.name = %tool_call.name,
+                            gen_ai.tool.call.id = %tool_call.id,
+                            gen_ai.tool.call.arguments = %tool_call.input,
                         );
 
                         let result = tool
@@ -214,6 +217,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
             if !required_tool_used && nudge_count < MAX_NUDGES {
                 let required_names = self.toolbox.required_tool_names();
                 if !required_names.is_empty() {
+                    tracing::warn!("no required tool used in this turn, nudging to use one of: {:?}", required_names);
                     let nudge = format!(
                         "System reminder: this turn requires using one of the following tools before you can complete: {}. Please make the appropriate tool call now.",
                         required_names.join(", ")
