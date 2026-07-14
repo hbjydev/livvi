@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 mpsc = "0.3"
 reqwest = "0.12"
 
+tracing-opentelemetry = "0.33"
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 opentelemetry-appender-tracing = "0.32"

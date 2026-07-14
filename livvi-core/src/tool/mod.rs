@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::memory::MemoryProvider;
 use crate::{context, model};
 
 pub use livvi_core_macros::tool;
@@ -16,6 +17,9 @@ pub enum ToolExtractError {
     /// The provided arguments validated but could not be deserialized into the input type.
     Deserialization(serde_json::Error),
 
+    /// A required resource (e.g. the memory provider) was not available.
+    MissingResource(String),
+
     /// The generated schema was invalid and could not be used for validation.
     Schema(anyhow::Error),
 }
@@ -27,6 +31,7 @@ impl std::fmt::Display for ToolExtractError {
             ToolExtractError::Deserialization(e) => {
                 write!(f, "failed to deserialize arguments: {e}")
             }
+            ToolExtractError::MissingResource(e) => write!(f, "missing resource: {e}"),
             ToolExtractError::Schema(e) => write!(f, "invalid schema: {e}"),
         }
     }
@@ -37,6 +42,7 @@ impl std::error::Error for ToolExtractError {
         match self {
             ToolExtractError::InvalidArguments(_) => None,
             ToolExtractError::Deserialization(e) => Some(e),
+            ToolExtractError::MissingResource(_) => None,
             ToolExtractError::Schema(e) => e.source(),
         }
     }
@@ -68,6 +74,9 @@ pub struct ToolContext<'a, S> {
 
     /// The user-provided application state.
     pub state: &'a S,
+
+    /// The configured memory provider, if any.
+    pub memory_provider: Option<&'a dyn MemoryProvider>,
 }
 
 /// Extracts a value from a [`ToolContext`] and the raw JSON tool arguments.

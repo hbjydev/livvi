@@ -73,9 +73,25 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         self
     }
 
-    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Self {
+    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Result<Self> {
         self.memory_provider = Some(Box::new(provider));
-        self
+
+        if self.toolbox.is_none() {
+            return Err(anyhow!(
+                "Toolbox must be set before adding memory provider tools"
+            ));
+        }
+
+        let tbr = self.toolbox.as_mut().unwrap();
+        tbr.add_tool(crate::memory::tools::memory_recall);
+        tbr.add_tool(crate::memory::tools::memory_remember);
+        tbr.add_tool(crate::memory::tools::memory_briefing);
+        tbr.add_tool(crate::memory::tools::memory_get);
+        tbr.add_tool(crate::memory::tools::memory_list);
+        tbr.add_tool(crate::memory::tools::memory_update);
+        tbr.add_tool(crate::memory::tools::memory_forget);
+
+        Ok(self)
     }
 
     pub fn build(self) -> Result<(broadcast::Receiver<AgentEvent>, Agent<S>)> {

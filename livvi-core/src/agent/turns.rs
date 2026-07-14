@@ -154,6 +154,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                             agent_context: context,
                             tool_call_id: &tool_call.id,
                             state: &self.state,
+                            memory_provider: self.memory_provider.as_deref(),
                         };
 
                         let result = tool.call(&ctx, tool_call.input).await;

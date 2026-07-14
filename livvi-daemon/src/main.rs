@@ -1,7 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use livvi_core::{
     agent::Agent,
-    async_trait,
     compaction::WindowCompactor,
     interrupt::{ExternalEvent, Interrupt},
     memory::MemoryProvider,
@@ -12,17 +11,18 @@ use livvi_discord::tools::{discord_react, discord_send};
 use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
 use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
 use livvi_memini::MeminiMemoryProvider;
-use livvi_memini::tools::{
-    memory_briefing, memory_forget, memory_get, memory_list, memory_recall, memory_remember,
-    memory_update,
-};
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
+use opentelemetry::global;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use std::env;
 use std::io::IsTerminal;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct AppState {
     pub discord: DiscordState,
@@ -41,92 +41,9 @@ impl AsRef<dyn MemoryProvider> for AppState {
     }
 }
 
-struct NoopMemoryProvider;
-
-#[async_trait]
-impl MemoryProvider for NoopMemoryProvider {
-    async fn remember(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _request: livvi_core::memory::RememberRequest,
-    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
-        Err(anyhow::anyhow!("memory provider not configured"))
-    }
-
-    async fn recall(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _request: livvi_core::memory::RecallRequest,
-    ) -> anyhow::Result<Vec<livvi_core::memory::ScoredMemory>> {
-        Ok(vec![])
-    }
-
-    async fn briefing(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _request: livvi_core::memory::BriefingRequest,
-    ) -> anyhow::Result<livvi_core::memory::Briefing> {
-        Ok(livvi_core::memory::Briefing {
-            namespace: String::new(),
-            scope_header: None,
-            facts: vec![],
-            procedures: vec![],
-            recent: vec![],
-            pinned: vec![],
-            children: None,
-        })
-    }
-
-    async fn get(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _id: &str,
-    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
-        Ok(None)
-    }
-
-    async fn list(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _request: livvi_core::memory::ListRequest,
-    ) -> anyhow::Result<Vec<livvi_core::memory::Memory>> {
-        Ok(vec![])
-    }
-
-    async fn forget(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _id: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn update(
-        &self,
-        _ctx: livvi_core::memory::MemoryContext,
-        _request: livvi_core::memory::UpdateRequest,
-    ) -> anyhow::Result<Option<livvi_core::memory::Memory>> {
-        Err(anyhow::anyhow!("memory provider not configured"))
-    }
-
-    fn clone_dyn(&self) -> Box<dyn MemoryProvider> {
-        Box::new(NoopMemoryProvider)
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let env_filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-        .from_env_lossy();
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .with_ansi(std::io::stderr().is_terminal())
-        .compact()
-        .init();
-
+    init_tracing().with_context(|| "failed to initialize tracing")?;
     info!("Starting Livvi...");
 
     let discord_token = env::var("LIVVI_DISCORD_TOKEN")
@@ -180,7 +97,7 @@ async fn main() -> Result<()> {
             &memini_namespace,
         ))
     } else {
-        Arc::new(NoopMemoryProvider)
+        Arc::new(livvi_core::memory::noop::NoopMemoryProvider)
     };
 
     let app_state = AppState {
@@ -228,15 +145,6 @@ async fn main() -> Result<()> {
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
             toolbox.add_tool(discord_react);
-            if memini_configured {
-                toolbox.add_tool(memory_recall);
-                toolbox.add_tool(memory_remember);
-                toolbox.add_tool(memory_briefing);
-                toolbox.add_tool(memory_get);
-                toolbox.add_tool(memory_list);
-                toolbox.add_tool(memory_update);
-                toolbox.add_tool(memory_forget);
-            }
             toolbox
         })
         .with_soul(format!(
@@ -248,7 +156,7 @@ async fn main() -> Result<()> {
         .with_compactor(compactor);
 
     if let Some(memory_provider) = memory_for_agent {
-        builder = builder.with_memory_provider(memory_provider);
+        builder = builder.with_memory_provider(memory_provider)?;
     }
 
     let (_agent_events, agent) = builder.build()?;
@@ -293,6 +201,46 @@ async fn main() -> Result<()> {
             warn!("Discord transport exited");
         }
     }
+
+    Ok(())
+}
+
+fn init_tracing() -> Result<()> {
+    let resource = Resource::builder()
+        .with_service_name("livvi")
+        .build();
+
+    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .build()
+        .with_context(|| "failed building span exporter")?;
+
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_resource(resource.clone())
+        .with_batch_exporter(span_exporter)
+        .build();
+
+    global::set_text_map_propagator(TraceContextPropagator::new());
+    global::set_tracer_provider(tracer_provider);
+
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    let otel_layer = tracing_opentelemetry::layer()
+        .with_tracer(global::tracer("livvi"));
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(std::io::stderr().is_terminal())
+        .compact()
+        .pretty();
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(otel_layer)
+        .with(env_filter)
+        .init();
 
     Ok(())
 }

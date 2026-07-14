@@ -1,9 +1,10 @@
-use livvi_core::{
+use crate::{
     memory::{
         About, Briefing, BriefingRequest, Level, ListRequest, Memory, MemoryContext,
-        MemoryProvider, RecallRequest, RememberRequest, Scope, ScoredMemory, Tier, UpdateRequest,
+        MemoryProviderRef, RecallRequest, RememberRequest, Scope, ScoredMemory, Tier,
+        UpdateRequest,
     },
-    tool::{Context, Input, State, tool},
+    tool::{Context, Input, tool},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ fn default_tier_semantic() -> Tier {
 
 fn memory_context_for_about(
     about: Option<&About>,
-    tool_context: &livvi_core::context::Context,
+    tool_context: &crate::context::Context,
 ) -> MemoryContext {
     let mut ctx = MemoryContext::from_tool_context(tool_context);
     if let Some(about) = about {
@@ -183,7 +184,7 @@ pub struct MemoryForgetInput {
 #[tool]
 pub async fn memory_recall(
     Input(input): Input<MemoryRecallInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Vec<ScoredMemory>, String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -220,7 +221,7 @@ pub async fn memory_recall(
 #[tool]
 pub async fn memory_remember(
     Input(input): Input<MemoryRememberInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -255,7 +256,7 @@ pub async fn memory_remember(
 #[tool]
 pub async fn memory_briefing(
     Input(input): Input<MemoryBriefingInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Briefing, String> {
     let ctx = MemoryContext::from_tool_context(agent_context);
@@ -282,7 +283,7 @@ pub async fn memory_briefing(
 #[tool]
 pub async fn memory_get(
     Input(input): Input<MemoryGetInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Option<Memory>, String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -299,7 +300,7 @@ pub async fn memory_get(
 #[tool]
 pub async fn memory_list(
     Input(input): Input<MemoryListInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Vec<Memory>, String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -328,7 +329,7 @@ pub async fn memory_list(
 #[tool]
 pub async fn memory_update(
     Input(input): Input<MemoryUpdateInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<Memory, String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -363,7 +364,7 @@ pub async fn memory_update(
 #[tool]
 pub async fn memory_forget(
     Input(input): Input<MemoryForgetInput>,
-    State(memory): State<'_, dyn MemoryProvider>,
+    MemoryProviderRef(memory): MemoryProviderRef<'_>,
     Context(agent_context): Context<'_>,
 ) -> Result<(), String> {
     let ctx = memory_context_for_about(input.about.as_ref(), agent_context);
@@ -376,7 +377,7 @@ pub async fn memory_forget(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use livvi_core::context::Context as AgentContext;
+    use crate::context::Context as AgentContext;
     use livvi_store::{ConversationId, PersonId};
 
     #[test]

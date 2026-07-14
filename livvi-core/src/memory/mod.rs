@@ -7,6 +7,9 @@ use time::OffsetDateTime;
 
 pub use livvi_store::{ConversationId, PersonId};
 
+pub mod noop;
+pub mod tools;
+
 /// Provenance and scope for a memory operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryContext {
@@ -567,6 +570,26 @@ impl MemoryProvider for Box<dyn MemoryProvider> {
 impl Clone for Box<dyn MemoryProvider> {
     fn clone(&self) -> Self {
         self.clone_dyn()
+    }
+}
+
+use crate::tool::{FromToolContext, ToolContext, ToolExtractError};
+
+/// Extractor that gives a tool access to the agent's configured memory provider.
+///
+/// Use this instead of `State<dyn MemoryProvider>` so that memory tools work with any
+/// application state type `S`; the provider is supplied by the agent loop rather than the
+/// user state.
+pub struct MemoryProviderRef<'a>(pub &'a dyn MemoryProvider);
+
+impl<'a, S> FromToolContext<'a, S> for MemoryProviderRef<'a> {
+    fn from_tool_context(
+        ctx: &'a ToolContext<'a, S>,
+        _args: &'a serde_json::Value,
+    ) -> Result<Self, ToolExtractError> {
+        ctx.memory_provider.map(MemoryProviderRef).ok_or_else(|| {
+            ToolExtractError::MissingResource("memory provider not configured".into())
+        })
     }
 }
 
