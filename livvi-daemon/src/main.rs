@@ -13,6 +13,8 @@ use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
 use livvi_memini::MeminiMemoryProvider;
 use livvi_openai::OpenAIChatCompletionsProvider;
 use livvi_store::{LivviSqliteStore, LivviStore};
+use livvi_web::WebState;
+use livvi_web::tools::{web_fetch, web_search};
 use opentelemetry::global;
 use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use std::env;
@@ -25,11 +27,18 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 pub struct AppState {
     pub discord: DiscordState,
     pub memory: Arc<dyn MemoryProvider>,
+    pub web: WebState,
 }
 
 impl AsRef<DiscordState> for AppState {
     fn as_ref(&self) -> &DiscordState {
         &self.discord
+    }
+}
+
+impl AsRef<WebState> for AppState {
+    fn as_ref(&self) -> &WebState {
+        &self.web
     }
 }
 
@@ -58,6 +67,14 @@ async fn main() -> Result<()> {
     let memini_api_key = env::var("LIVVI_MEMINI_API_KEY").ok();
     let memini_namespace =
         env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string());
+
+    let searxng_url = env::var("LIVVI_SEARXNG_URL").ok().filter(|s| !s.is_empty());
+    let web_configured = searxng_url.is_some();
+    if web_configured {
+        info!("web_search and web_fetch enabled via LIVVI_SEARXNG_URL");
+    } else {
+        info!("LIVVI_SEARXNG_URL not set; web_search and web_fetch disabled");
+    }
 
     let memini_configured = memini_base_url.as_ref().is_some_and(|u| !u.is_empty())
         && memini_api_key.as_ref().is_some_and(|k| !k.is_empty());
@@ -101,6 +118,7 @@ async fn main() -> Result<()> {
     let app_state = AppState {
         discord: (*discord_state).clone(),
         memory: memory_provider,
+        web: WebState::new(searxng_url),
     };
 
     let (provider, compactor): (
@@ -143,6 +161,10 @@ async fn main() -> Result<()> {
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
             toolbox.add_tool(discord_react);
+            if web_configured {
+                toolbox.add_tool(web_fetch);
+                toolbox.add_tool(web_search);
+            }
             toolbox
         })
         .with_soul(format!(

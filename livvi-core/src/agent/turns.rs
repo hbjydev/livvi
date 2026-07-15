@@ -8,7 +8,7 @@ use crate::{
     AgentEvent,
     agent::Agent,
     context::Context,
-    context::wrap_scratchpad,
+    context::clean_assistant_text,
     interrupt::Interrupt,
     memory::{About, BriefingRequest, MemoryContext, RememberRequest, Scope, Tier},
     model::Message,
@@ -110,6 +110,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 cancelled_by: stream_cancelled_by,
             } = self.stream_iteration(context, &mut stashed_interrupt).await;
 
+            // Strip any scratchpad tags the model emits so they cannot
+            // accumulate in the context and recurse. The system prompt already
+            // tells the model that plain assistant text is the scratchpad, so
+            // wrapping/cleaning here is purely defensive.
+            let iteration_response = clean_assistant_text(iteration_response);
+
             if let Some(interrupt) = stream_cancelled_by {
                 let _ = self.output.send(AgentEvent::Done);
                 return Ok(Some(interrupt));
@@ -135,7 +141,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
                 context.push_assistant_tool_calls(
                     tool_calls.clone(),
-                    Some(wrap_scratchpad(&iteration_response)),
+                    Some(iteration_response.clone()),
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking.as_str()),
                 );
 
@@ -209,7 +215,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
             let has_assistant_content = has_final_text || !iteration_thinking.is_empty();
             if has_assistant_content {
                 context.push_assistant(
-                    wrap_scratchpad(&iteration_response),
+                    iteration_response.clone(),
                     (!iteration_thinking.is_empty()).then_some(iteration_thinking),
                 );
             }

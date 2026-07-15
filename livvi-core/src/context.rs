@@ -9,18 +9,20 @@ pub struct Context {
     pub conversation_id: Option<ConversationId>,
 }
 
-/// Wrap a direct assistant response so it is stored as scratchpad data in
-/// the conversation context.
+/// Strip scratchpad tags from assistant output before storing it in context.
 ///
-/// If the content is empty, it is returned as-is so that we don't insert
-/// pointless empty tags into the context.
-pub(crate) fn wrap_scratchpad(content: impl Into<String>) -> String {
+/// The system prompt tells the model that plain assistant text *is* the
+/// scratchpad, so we do not wrap it. However, the model may still emit
+/// `<scratchpad>`/`<\/scratchpad>` tags (especially if it learned the format
+/// from earlier contexts). This function removes them so they cannot
+/// accumulate and recurse.
+pub(crate) fn clean_assistant_text(content: impl Into<String>) -> String {
     let content = content.into();
-    if content.is_empty() {
-        content
-    } else {
-        format!("<scratchpad>{}</scratchpad>", content)
-    }
+    content
+        .replace("<scratchpad>", "")
+        .replace("</scratchpad>", "")
+        .trim()
+        .to_string()
 }
 
 impl Context {
@@ -135,9 +137,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_wrap_scratchpad() {
-        assert_eq!(wrap_scratchpad("hello"), "<scratchpad>hello</scratchpad>");
-        assert_eq!(wrap_scratchpad(""), "");
+    fn test_clean_assistant_text_strips_tags_and_trims() {
+        assert_eq!(clean_assistant_text("hello"), "hello");
+        assert_eq!(clean_assistant_text(""), "");
+        assert_eq!(
+            clean_assistant_text("<scratchpad>hello</scratchpad>"),
+            "hello"
+        );
+        assert_eq!(
+            clean_assistant_text("<scratchpad><scratchpad>hello</scratchpad></scratchpad>"),
+            "hello"
+        );
+        assert_eq!(clean_assistant_text("<scratchpad></scratchpad>"), "");
+        assert_eq!(
+            clean_assistant_text("<scratchpad>  hello  </scratchpad>"),
+            "hello"
+        );
     }
 
     #[test]
