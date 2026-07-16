@@ -194,6 +194,7 @@ pub struct ToolDefinition {
     pub description: String,
     pub input_schema: schemars::Schema,
     pub is_required: bool,
+    pub allowed_by_default: bool,
 }
 
 /// Implemented by the generated wrapper for a `#[tool]` function.
@@ -258,6 +259,14 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
     /// Returns whether a tool with the given name is registered.
     pub fn has_tool(&self, tool_name: &str) -> bool {
         self.tools.contains_key(tool_name)
+    }
+
+    /// Returns whether the named tool is marked as allowed by default.
+    pub fn is_allowed_by_default(&self, tool_name: &str) -> bool {
+        self.tools
+            .get(tool_name)
+            .map(|tool| tool.schema().allowed_by_default)
+            .unwrap_or(false)
     }
 
     /// Returns the tool with the given name, if any.

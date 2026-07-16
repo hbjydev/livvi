@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use livvi_core::{
     agent::Agent,
     compaction::WindowCompactor,
-    interrupt::{ExternalEvent, Interrupt, ResetEvent},
+    interrupt::{AllowToolEvent, ExternalEvent, Interrupt, ResetEvent},
     memory::MemoryProvider,
     summarizer::Summarizer,
     tool::Toolbox,
@@ -17,6 +17,7 @@ use livvi_web::WebState;
 use livvi_web::tools::{web_fetch, web_search};
 use opentelemetry::global;
 use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
+use std::collections::HashSet;
 use std::env;
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -101,7 +102,16 @@ async fn main() -> Result<()> {
     let (resolved_tx, resolved_rx) = mpsc::channel::<Interrupt>(256);
 
     let discord_state = Arc::new(DiscordState::new(&discord_token));
-    let transport = DiscordTransport::new(&discord_token, raw_tx).await?;
+
+    let allowed_tool_user_ids: HashSet<u64> = env::var("LIVVI_DISCORD_ALLOW_TOOL_USER_IDS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u64>().ok())
+        .collect();
+
+    let transport = DiscordTransport::new(&discord_token, raw_tx, allowed_tool_user_ids).await?;
 
     let memory_provider: Arc<dyn MemoryProvider> = if memini_configured {
         Arc::new(MeminiMemoryProvider::new(
@@ -157,6 +167,7 @@ async fn main() -> Result<()> {
     let mut builder = Agent::builder()
         .with_provider(provider)
         .with_state(app_state)
+        .with_tool_permission_store(store.clone())
         .with_toolbox({
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
@@ -283,6 +294,10 @@ async fn resolve_interrupt(
             let resolved = resolve_reset_event(event, store).await?;
             Ok(Some(Interrupt::reset(resolved)))
         }
+        Interrupt::AllowTool(event) => {
+            resolve_allow_tool_event(event, store).await?;
+            Ok(None)
+        }
     }
 }
 
@@ -353,6 +368,28 @@ async fn resolve_reset_event(mut event: ResetEvent, store: &impl LivviStore) -> 
     event.conversation_id = Some(conversation.id);
 
     Ok(event)
+}
+
+async fn resolve_allow_tool_event(
+    mut event: AllowToolEvent,
+    store: &impl LivviStore,
+) -> Result<()> {
+    let conversation = store
+        .ensure_conversation(
+            &event.conversation.transport_kind,
+            &event.conversation.transport_id,
+            event.conversation.display_name.clone(),
+            event.conversation.metadata.clone(),
+        )
+        .await?;
+
+    store
+        .set_tool_permission(&conversation.id, &event.tool_name, true)
+        .await?;
+
+    event.conversation_id = Some(conversation.id);
+
+    Ok(())
 }
 
 async fn shutdown_signal() {

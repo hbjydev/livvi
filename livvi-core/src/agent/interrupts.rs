@@ -19,6 +19,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 self.handle_reset_interrupt(interrupt, context, conversation_id)
                     .await
             }
+            Interrupt::AllowTool(..) => {
+                tracing::debug!("AllowTool interrupt received by agent; no action needed");
+                Ok(None)
+            }
         }
     }
 

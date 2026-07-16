@@ -1,7 +1,7 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use anyhow::{Result, anyhow};
-use livvi_store::ConversationId;
+use livvi_store::{ConversationId, ToolPermissionStorage};
 use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
 
@@ -22,6 +22,7 @@ pub struct AgentBuilder<S: Sync + Send + 'static> {
     toolbox: Option<Toolbox<S>>,
     compactor: Option<Box<dyn Compactor>>,
     memory_provider: Option<Box<dyn MemoryProvider>>,
+    tool_permission_store: Option<Arc<dyn ToolPermissionStorage>>,
 }
 
 impl<S: Sync + Send + 'static> Default for AgentBuilder<S> {
@@ -40,6 +41,7 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             toolbox: None,
             compactor: None,
             memory_provider: None,
+            tool_permission_store: None,
         }
     }
 
@@ -70,6 +72,14 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
 
     pub fn with_compactor(mut self, compactor: impl Compactor) -> Self {
         self.compactor = Some(Box::new(compactor));
+        self
+    }
+
+    pub fn with_tool_permission_store(
+        mut self,
+        store: impl ToolPermissionStorage + 'static,
+    ) -> Self {
+        self.tool_permission_store = Some(Arc::new(store));
         self
     }
 
@@ -128,6 +138,7 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
                 soul,
                 compactor,
                 memory_provider: self.memory_provider,
+                tool_permission_store: self.tool_permission_store,
             },
         ))
     }
@@ -142,6 +153,7 @@ pub struct Agent<S: Sync + Send + 'static> {
     soul: String,
     compactor: Box<dyn Compactor>,
     memory_provider: Option<Box<dyn MemoryProvider>>,
+    tool_permission_store: Option<Arc<dyn ToolPermissionStorage>>,
 }
 
 impl<S: Sync + Send + 'static> Agent<S> {
@@ -169,6 +181,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
                                 .clone()
                                 .unwrap_or_else(|| ConversationId::from("global")),
                             Interrupt::Reset(event) => event
+                                .conversation_id
+                                .clone()
+                                .unwrap_or_else(|| ConversationId::from("global")),
+                            Interrupt::AllowTool(event) => event
                                 .conversation_id
                                 .clone()
                                 .unwrap_or_else(|| ConversationId::from("global")),

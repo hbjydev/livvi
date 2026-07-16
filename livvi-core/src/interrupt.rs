@@ -149,6 +149,74 @@ impl ResetEvent {
     }
 }
 
+/// A request to grant permission for a tool in a specific conversation.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct AllowToolEvent {
+    pub transport_kind: String,
+    pub author: ExternalAuthor,
+    pub conversation: ExternalConversation,
+    pub tool_name: String,
+    pub person_id: Option<PersonId>,
+    pub conversation_id: Option<ConversationId>,
+    pub metadata: Value,
+    pub timestamp: Option<OffsetDateTime>,
+}
+
+impl Debug for AllowToolEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AllowToolEvent")
+            .field("transport", &self.transport_kind)
+            .field("tool", &self.tool_name)
+            .field("author", &self.person_id.as_ref().map(|p| short_id(&p.0)))
+            .field(
+                "conv",
+                &self.conversation_id.as_ref().map(|c| short_id(&c.0)),
+            )
+            .finish()
+    }
+}
+
+impl Display for AllowToolEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.allow_tool {}", self.transport_kind, self.tool_name)?;
+        if let Some(person) = &self.person_id {
+            write!(f, " person={}", short_id(&person.0))?;
+        } else if let Some(name) = &self.author.display_name {
+            write!(f, " author={}", name)?;
+        } else {
+            write!(f, " author={}", self.author.transport_id)?;
+        }
+        if let Some(conv) = &self.conversation_id {
+            write!(f, " conv={}", short_id(&conv.0))?;
+        } else if let Some(name) = &self.conversation.display_name {
+            write!(f, " conv={}", name)?;
+        } else {
+            write!(f, " conv={}", self.conversation.transport_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl AllowToolEvent {
+    pub fn new(
+        transport_kind: impl Into<String>,
+        author: ExternalAuthor,
+        conversation: ExternalConversation,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport_kind: transport_kind.into(),
+            author,
+            conversation,
+            tool_name: tool_name.into(),
+            person_id: None,
+            conversation_id: None,
+            metadata: Value::Null,
+            timestamp: Some(OffsetDateTime::now_utc()),
+        }
+    }
+}
+
 impl ExternalEvent {
     /// Format the event as an XML message for the model's context.
     ///
@@ -248,6 +316,7 @@ fn xml_escape(s: &str) -> String {
 pub enum Interrupt {
     ExternalEvent(ExternalEvent),
     Reset(ResetEvent),
+    AllowTool(AllowToolEvent),
 }
 
 impl Debug for Interrupt {
@@ -255,6 +324,7 @@ impl Debug for Interrupt {
         match self {
             Interrupt::ExternalEvent(event) => Display::fmt(event, f),
             Interrupt::Reset(event) => Display::fmt(event, f),
+            Interrupt::AllowTool(event) => Display::fmt(event, f),
         }
     }
 }
@@ -264,6 +334,7 @@ impl Display for Interrupt {
         match self {
             Interrupt::ExternalEvent(event) => Display::fmt(event, f),
             Interrupt::Reset(event) => Display::fmt(event, f),
+            Interrupt::AllowTool(event) => Display::fmt(event, f),
         }
     }
 }
@@ -277,6 +348,11 @@ impl Interrupt {
     /// Create an interrupt that wipes the in-memory context for a conversation.
     pub fn reset(event: ResetEvent) -> Self {
         Interrupt::Reset(event)
+    }
+
+    /// Create an interrupt that grants permission for a tool in a conversation.
+    pub fn allow_tool(event: AllowToolEvent) -> Self {
+        Interrupt::AllowTool(event)
     }
 
     /// Convenience constructor for simple text input in tests and examples.

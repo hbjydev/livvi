@@ -30,6 +30,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
         .or_else(|| extract_doc_comment(&input_fn.attrs))
         .unwrap_or_default();
     let is_required = args.is_required.unwrap_or(false);
+    let allowed_by_default = args.allowed_by_default.unwrap_or(false);
 
     let input_type = find_input_type(&input_fn.sig.inputs)?;
     let state_bounds = find_state_bounds(&input_fn.sig.inputs)?;
@@ -59,6 +60,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
                         description: #description.to_string(),
                         input_schema: #crate_path::schemars::schema_for!(#input_type),
                         is_required: #is_required,
+                        allowed_by_default: #allowed_by_default,
                     }
                 }
 
@@ -82,6 +84,7 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
                         description: #description.to_string(),
                         input_schema: #crate_path::schemars::schema_for!(#input_type),
                         is_required: #is_required,
+                        allowed_by_default: #allowed_by_default,
                     }
                 }
 
@@ -110,6 +113,7 @@ struct ToolArgs {
     name: Option<String>,
     description: Option<String>,
     is_required: Option<bool>,
+    allowed_by_default: Option<bool>,
 }
 
 impl ToolArgs {
@@ -118,6 +122,7 @@ impl ToolArgs {
             name: None,
             description: None,
             is_required: None,
+            allowed_by_default: None,
         }
     }
 }
@@ -165,6 +170,19 @@ fn parse_tool_args(args: &proc_macro2::TokenStream) -> ToolArgs {
                     }) => {
                         if let Ok(b) = s.value().parse::<bool>() {
                             result.is_required = Some(b);
+                        }
+                    }
+                    _ => {}
+                },
+                "allowed_by_default" => match value {
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Bool(b), ..
+                    }) => result.allowed_by_default = Some(b.value()),
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) => {
+                        if let Ok(b) = s.value().parse::<bool>() {
+                            result.allowed_by_default = Some(b);
                         }
                     }
                     _ => {}

@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::conversation::{Conversation, ConversationId, ConversationStorage};
 use crate::person::{Person, PersonId, PersonIdentity, PersonStorage};
+use crate::tool_permission::ToolPermissionStorage;
 
 /// In-memory implementation of the storage traits for unit tests.
 ///
@@ -21,6 +22,7 @@ pub struct MockStore {
     conversations: RwLock<HashMap<ConversationId, Conversation>>,
     conversation_transports: RwLock<HashMap<(String, String), ConversationId>>,
     participants: RwLock<HashMap<ConversationId, HashSet<PersonId>>>,
+    tool_permissions: RwLock<HashMap<(ConversationId, String), bool>>,
 }
 
 impl MockStore {
@@ -32,6 +34,7 @@ impl MockStore {
             conversations: RwLock::new(HashMap::new()),
             conversation_transports: RwLock::new(HashMap::new()),
             participants: RwLock::new(HashMap::new()),
+            tool_permissions: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -211,6 +214,43 @@ impl ConversationStorage for MockStore {
         Ok(participant_ids
             .into_iter()
             .filter_map(|id| persons.get(&id).cloned())
+            .collect())
+    }
+}
+
+#[async_trait]
+impl ToolPermissionStorage for MockStore {
+    async fn set_tool_permission(
+        &self,
+        conversation_id: &ConversationId,
+        tool_name: &str,
+        allowed: bool,
+    ) -> Result<()> {
+        let mut perms = self.tool_permissions.write().await;
+        perms.insert((conversation_id.clone(), tool_name.to_string()), allowed);
+        Ok(())
+    }
+
+    async fn get_tool_permission(
+        &self,
+        conversation_id: &ConversationId,
+        tool_name: &str,
+    ) -> Result<Option<bool>> {
+        let perms = self.tool_permissions.read().await;
+        Ok(perms
+            .get(&(conversation_id.clone(), tool_name.to_string()))
+            .copied())
+    }
+
+    async fn list_tool_permissions(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<HashMap<String, bool>> {
+        let perms = self.tool_permissions.read().await;
+        Ok(perms
+            .iter()
+            .filter(|((conv_id, _), _)| conv_id == conversation_id)
+            .map(|((_, tool_name), allowed)| (tool_name.clone(), *allowed))
             .collect())
     }
 }

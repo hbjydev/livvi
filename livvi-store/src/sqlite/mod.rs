@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::{SqlitePool, types::Json};
@@ -7,12 +9,14 @@ use uuid::Uuid;
 
 use crate::conversation::{Conversation, ConversationId, ConversationStorage};
 use crate::person::{Person, PersonId, PersonIdentity, PersonStorage};
+use crate::tool_permission::{ToolPermission, ToolPermissionStorage};
 
 /// SQLite-backed implementation of Livvi's storage traits.
 ///
 /// Use [`LivviSqliteStore::connect`] to create a store from a database URL and
 /// run pending migrations. For tests or custom pool setup, use
 /// [`LivviSqliteStore::from_pool`].
+#[derive(Clone)]
 pub struct LivviSqliteStore {
     pool: SqlitePool,
 }
@@ -79,6 +83,82 @@ impl From<ConversationRow> for Conversation {
             created_at: row.created_at,
             last_active_at: row.last_active_at,
         }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ToolPermissionRow {
+    conversation_id: String,
+    tool_name: String,
+    allowed: bool,
+    updated_at: OffsetDateTime,
+}
+
+impl From<ToolPermissionRow> for ToolPermission {
+    fn from(row: ToolPermissionRow) -> Self {
+        ToolPermission {
+            conversation_id: ConversationId(row.conversation_id),
+            tool_name: row.tool_name,
+            allowed: row.allowed,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl ToolPermissionStorage for LivviSqliteStore {
+    #[instrument(skip(self), level = "trace")]
+    async fn set_tool_permission(
+        &self,
+        conversation_id: &ConversationId,
+        tool_name: &str,
+        allowed: bool,
+    ) -> Result<()> {
+        let now = OffsetDateTime::now_utc();
+
+        sqlx::query(
+            "INSERT INTO tool_permissions (conversation_id, tool_name, allowed, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id, tool_name) DO UPDATE SET allowed = excluded.allowed, updated_at = excluded.updated_at",
+        )
+        .bind(&conversation_id.0)
+        .bind(tool_name)
+        .bind(allowed)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), level = "trace")]
+    async fn get_tool_permission(
+        &self,
+        conversation_id: &ConversationId,
+        tool_name: &str,
+    ) -> Result<Option<bool>> {
+        let row = sqlx::query_as::<_, ToolPermissionRow>(
+            "SELECT conversation_id, tool_name, allowed, updated_at FROM tool_permissions WHERE conversation_id = ? AND tool_name = ?",
+        )
+        .bind(&conversation_id.0)
+        .bind(tool_name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.allowed))
+    }
+
+    #[instrument(skip(self), level = "trace")]
+    async fn list_tool_permissions(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<HashMap<String, bool>> {
+        let rows = sqlx::query_as::<_, ToolPermissionRow>(
+            "SELECT conversation_id, tool_name, allowed, updated_at FROM tool_permissions WHERE conversation_id = ?",
+        )
+        .bind(&conversation_id.0)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (r.tool_name, r.allowed)).collect())
     }
 }
 

@@ -4,12 +4,14 @@ mod state;
 
 pub use state::DiscordState;
 
+use std::collections::HashSet;
+
 use anyhow::Result;
-use livvi_core::interrupt::{Interrupt, ResetEvent};
+use livvi_core::interrupt::{AllowToolEvent, Interrupt, ResetEvent};
 use serenity::all::{
-    CacheHttp, Client, Command, CommandInteraction, Context, CreateCommand,
-    CreateInteractionResponse, CreateInteractionResponseMessage, EventHandler, GatewayIntents,
-    Interaction, Message, Ready,
+    CacheHttp, Client, Command, CommandInteraction, CommandOptionType, Context, CreateCommand,
+    CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, EventHandler,
+    GatewayIntents, Interaction, Message, Ready,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -18,6 +20,7 @@ pub const DISCORD_INSTRUCTIONS: &str = include_str!("./instructions.md");
 
 struct Handler {
     interrupt_tx: mpsc::Sender<Interrupt>,
+    allowed_tool_user_ids: HashSet<u64>,
 }
 
 #[serenity::async_trait]
@@ -108,12 +111,18 @@ impl EventHandler for Handler {
             return;
         };
 
-        if command.data.name != "reset" {
-            return;
-        }
-
-        if let Err(e) = self.handle_reset_command(&ctx, &command).await {
-            error!(error = %e, "failed to handle reset command");
+        match command.data.name.as_str() {
+            "reset" => {
+                if let Err(e) = self.handle_reset_command(&ctx, &command).await {
+                    error!(error = %e, "failed to handle reset command");
+                }
+            }
+            "allow" => {
+                if let Err(e) = self.handle_allow_tool_command(&ctx, &command).await {
+                    error!(error = %e, "failed to handle allow tool command");
+                }
+            }
+            _ => {}
         }
     }
 
@@ -123,13 +132,117 @@ impl EventHandler for Handler {
         let reset_command = CreateCommand::new("reset")
             .description("Wipe the conversation context for this channel");
 
-        if let Err(e) = Command::set_global_commands(ctx.http(), vec![reset_command]).await {
+        let allow_tool_command = CreateCommand::new("allow")
+            .description("Allow a tool to run in this channel")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "tool",
+                    "Allow a specific tool",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "tool_name",
+                        "Name of the tool to allow",
+                    )
+                    .required(true),
+                ),
+            );
+
+        if let Err(e) =
+            Command::set_global_commands(ctx.http(), vec![reset_command, allow_tool_command]).await
+        {
             error!(error = %e, "failed to register Discord slash commands");
         }
     }
 }
 
 impl Handler {
+    async fn handle_allow_tool_command(
+        &self,
+        ctx: &Context,
+        command: &CommandInteraction,
+    ) -> Result<()> {
+        if !self.allowed_tool_user_ids.contains(&command.user.id.get()) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command.")
+                    .ephemeral(true),
+            );
+            command.create_response(ctx.http(), response).await?;
+            return Ok(());
+        }
+
+        let tool_name =
+            command
+                .data
+                .options
+                .iter()
+                .find_map(|opt| match (opt.name.as_str(), &opt.value) {
+                    ("tool", serenity::all::CommandDataOptionValue::SubCommand(sub_options)) => {
+                        sub_options
+                            .iter()
+                            .find_map(|sub| match (sub.name.as_str(), &sub.value) {
+                                (
+                                    "tool_name",
+                                    serenity::all::CommandDataOptionValue::String(name),
+                                ) => Some(name.clone()),
+                                _ => None,
+                            })
+                    }
+                    _ => None,
+                });
+
+        let Some(tool_name) = tool_name else {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Please provide a tool name.")
+                    .ephemeral(true),
+            );
+            command.create_response(ctx.http(), response).await?;
+            return Ok(());
+        };
+
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!(
+                    "Tool `{tool_name}` is now allowed in this channel."
+                ))
+                .ephemeral(true),
+        );
+        command.create_response(ctx.http(), response).await?;
+
+        let event = AllowToolEvent::new(
+            "discord",
+            livvi_core::interrupt::ExternalAuthor {
+                transport_kind: "discord".to_string(),
+                transport_id: command.user.id.to_string(),
+                display_name: Some(command.user.name.clone()),
+                metadata: serde_json::json!({
+                    "author_name": command.user.name,
+                    "discriminator": command.user.discriminator,
+                }),
+            },
+            livvi_core::interrupt::ExternalConversation {
+                transport_kind: "discord".to_string(),
+                transport_id: command.channel_id.to_string(),
+                display_name: None,
+                metadata: serde_json::json!({
+                    "guild_id": command.guild_id.map(|g| g.to_string()),
+                    "is_dm": command.guild_id.is_none(),
+                }),
+            },
+            tool_name,
+        );
+
+        if let Err(e) = self.interrupt_tx.send(Interrupt::allow_tool(event)).await {
+            error!(error = %e, "failed to forward allow tool command to agent loop");
+        }
+
+        Ok(())
+    }
+
     async fn handle_reset_command(
         &self,
         ctx: &Context,
@@ -196,12 +309,16 @@ impl DiscordTransport {
     pub async fn new(
         token: impl AsRef<str>,
         interrupt_tx: mpsc::Sender<Interrupt>,
+        allowed_tool_user_ids: HashSet<u64>,
     ) -> Result<Self> {
         let intents = GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
-        let handler = Handler { interrupt_tx };
+        let handler = Handler {
+            interrupt_tx,
+            allowed_tool_user_ids,
+        };
 
         let client = Client::builder(token, intents)
             .event_handler(handler)

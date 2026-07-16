@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -14,7 +15,7 @@ use crate::{
     model::Message,
     model::ToolCall,
     provider::ProviderEvent,
-    tool::ToolContext,
+    tool::{ToolContext, ToolDefinition},
 };
 
 const TOK_STREAM_BUFFER_SIZE: usize = 256;
@@ -99,6 +100,8 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
         context.compact(&*self.compactor, conversation_id).await;
 
+        let allowed_tools = self.fetch_allowed_tools(conversation_id).await?;
+
         let final_response = loop {
             let StreamIteration {
                 response: iteration_response,
@@ -106,7 +109,9 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 tool_calls,
                 stream_error,
                 cancelled_by: stream_cancelled_by,
-            } = self.stream_iteration(context, &mut stashed_interrupt).await;
+            } = self
+                .stream_iteration(context, &mut stashed_interrupt, &allowed_tools)
+                .await;
 
             // Strip any scratchpad tags the model emits so they cannot
             // accumulate in the context and recurse. The system prompt already
@@ -129,7 +134,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
             let current_iteration_used_required_tool = tool_calls.iter().any(|call| {
                 self.toolbox
                     .get_tool(&call.name)
-                    .map(|tool| tool.schema().is_required)
+                    .map(|tool| {
+                        tool.schema().is_required
+                            && self.is_tool_allowed(&call.name, &allowed_tools)
+                    })
                     .unwrap_or(false)
             });
             required_tool_used |= current_iteration_used_required_tool;
@@ -153,6 +161,23 @@ impl<S: Sync + Send + 'static> Agent<S> {
                         .output
                         .send(AgentEvent::ToolCall(vec![tool_call.clone()]));
                     if let Some(tool) = self.toolbox.get_tool(&tool_call.name) {
+                        if !self.is_tool_allowed(&tool_call.name, &allowed_tools) {
+                            let msg = format!(
+                                "Tool '{}' is not allowed in this conversation",
+                                tool_call.name
+                            );
+                            tracing::warn!(%msg);
+                            let _ = self.output.send(AgentEvent::Error(msg.clone()));
+                            let _ = self
+                                .output
+                                .send(AgentEvent::Status("Tool not allowed".into()));
+
+                            context.push_tool_result(&tool_call.id,
+                                "This tool is not allowed in the current conversation. Use /allow tool <tool_name> to enable it."
+                            );
+                            continue;
+                        }
+
                         let _ = self.output.send(AgentEvent::ToolCallStarted);
 
                         let ctx = ToolContext::<S> {
@@ -219,7 +244,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
             }
 
             if !required_tool_used && nudge_count < MAX_NUDGES {
-                let required_names = self.toolbox.required_tool_names();
+                let required_names = self
+                    .toolbox
+                    .required_tool_names()
+                    .into_iter()
+                    .filter(|name| self.is_tool_allowed(name, &allowed_tools))
+                    .collect::<Vec<_>>();
                 if !required_names.is_empty() {
                     tracing::warn!(
                         "no required tool used in this turn, nudging to use one of: {:?}",
@@ -348,11 +378,12 @@ impl<S: Sync + Send + 'static> Agent<S> {
         &mut self,
         ctx: &mut Context,
         stashed_interrupt: &mut Option<Interrupt>,
+        allowed_tools: &HashMap<String, bool>,
     ) -> StreamIteration {
         let (tok_tx, mut tok_rx) = mpsc::channel(TOK_STREAM_BUFFER_SIZE);
         let mut provider = self.provider.clone_dyn();
         let msgs = ctx.as_messages();
-        let tool_schemas = self.toolbox.schemas();
+        let tool_schemas = self.filtered_tool_schemas(allowed_tools);
         let stream_task =
             tokio::spawn(async move { provider.stream(tok_tx, msgs, tool_schemas).await })
                 .instrument(tracing::info_span!(
@@ -451,5 +482,36 @@ impl<S: Sync + Send + 'static> Agent<S> {
             stream_error,
             cancelled_by,
         }
+    }
+
+    async fn fetch_allowed_tools(
+        &self,
+        conversation_id: &livvi_store::ConversationId,
+    ) -> Result<HashMap<String, bool>> {
+        if let Some(store) = &self.tool_permission_store {
+            store.list_tool_permissions(conversation_id).await
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
+    fn is_tool_allowed(&self, tool_name: &str, allowed_tools: &HashMap<String, bool>) -> bool {
+        if self.toolbox.is_allowed_by_default(tool_name) {
+            return true;
+        }
+        allowed_tools.get(tool_name).copied().unwrap_or(false)
+    }
+
+    fn filtered_tool_schemas(
+        &self,
+        allowed_tools: &HashMap<String, bool>,
+    ) -> HashMap<String, ToolDefinition> {
+        self.toolbox
+            .schemas()
+            .into_iter()
+            .filter(|(name, schema)| {
+                schema.allowed_by_default || allowed_tools.get(name).copied().unwrap_or(false)
+            })
+            .collect()
     }
 }
