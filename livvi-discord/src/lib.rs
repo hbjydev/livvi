@@ -5,8 +5,12 @@ mod state;
 pub use state::DiscordState;
 
 use anyhow::Result;
-use livvi_core::interrupt::Interrupt;
-use serenity::all::{CacheHttp, Client, Context, EventHandler, GatewayIntents, Message, Ready};
+use livvi_core::interrupt::{Interrupt, ResetEvent};
+use serenity::all::{
+    CacheHttp, Client, Command, CommandInteraction, Context, CreateCommand,
+    CreateInteractionResponse, CreateInteractionResponseMessage, EventHandler, GatewayIntents,
+    Interaction, Message, Ready,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -93,8 +97,84 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn ready(&self, _ctx: Context, ready: Ready) {
+    #[tracing::instrument(
+        skip(self, ctx, interaction),
+        fields(
+            otel.name = "discord.recv_interaction",
+        )
+    )]
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let Interaction::Command(command) = interaction else {
+            return;
+        };
+
+        if command.data.name != "reset" {
+            return;
+        }
+
+        if let Err(e) = self.handle_reset_command(&ctx, &command).await {
+            error!(error = %e, "failed to handle reset command");
+        }
+    }
+
+    async fn ready(&self, ctx: Context, ready: Ready) {
         info!(bot_username = %ready.user.name, "Discord bot connected");
+
+        let reset_command = CreateCommand::new("reset")
+            .description("Wipe the conversation context for this channel");
+
+        if let Err(e) = Command::set_global_commands(ctx.http(), vec![reset_command]).await {
+            error!(error = %e, "failed to register Discord slash commands");
+        }
+    }
+}
+
+impl Handler {
+    async fn handle_reset_command(
+        &self,
+        ctx: &Context,
+        command: &CommandInteraction,
+    ) -> Result<()> {
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Conversation context reset.")
+                .ephemeral(true),
+        );
+        command.create_response(ctx.http(), response).await?;
+
+        let display_name = command
+            .member
+            .as_ref()
+            .and_then(|m| m.nick.clone())
+            .unwrap_or_else(|| command.user.name.clone());
+
+        let event = ResetEvent::new(
+            "discord",
+            livvi_core::interrupt::ExternalAuthor {
+                transport_kind: "discord".to_string(),
+                transport_id: command.user.id.to_string(),
+                display_name: Some(display_name),
+                metadata: serde_json::json!({
+                    "author_name": command.user.name,
+                    "discriminator": command.user.discriminator,
+                }),
+            },
+            livvi_core::interrupt::ExternalConversation {
+                transport_kind: "discord".to_string(),
+                transport_id: command.channel_id.to_string(),
+                display_name: None,
+                metadata: serde_json::json!({
+                    "guild_id": command.guild_id.map(|g| g.to_string()),
+                    "is_dm": command.guild_id.is_none(),
+                }),
+            },
+        );
+
+        if let Err(e) = self.interrupt_tx.send(Interrupt::reset(event)).await {
+            error!(error = %e, "failed to forward reset command to agent loop");
+        }
+
+        Ok(())
     }
 }
 

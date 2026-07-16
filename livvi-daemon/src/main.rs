@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use livvi_core::{
     agent::Agent,
     compaction::WindowCompactor,
-    interrupt::{ExternalEvent, Interrupt},
+    interrupt::{ExternalEvent, Interrupt, ResetEvent},
     memory::MemoryProvider,
     summarizer::Summarizer,
     tool::Toolbox,
@@ -274,16 +274,55 @@ async fn resolve_interrupt(
     interrupt: Interrupt,
     store: &impl LivviStore,
 ) -> Result<Option<Interrupt>> {
-    let Interrupt::ExternalEvent(event) = interrupt;
-
-    let resolved = resolve_external_event(event, store).await?;
-    Ok(Some(Interrupt::external_event(resolved)))
+    match interrupt {
+        Interrupt::ExternalEvent(event) => {
+            let resolved = resolve_external_event(event, store).await?;
+            Ok(Some(Interrupt::external_event(resolved)))
+        }
+        Interrupt::Reset(event) => {
+            let resolved = resolve_reset_event(event, store).await?;
+            Ok(Some(Interrupt::reset(resolved)))
+        }
+    }
 }
 
 async fn resolve_external_event(
     mut event: ExternalEvent,
     store: &impl LivviStore,
 ) -> Result<ExternalEvent> {
+    let person = store
+        .ensure_identity(
+            &event.author.transport_kind,
+            &event.author.transport_id,
+            event.author.display_name.clone(),
+            event.author.metadata.clone(),
+        )
+        .await?;
+
+    if let Some(name) = &event.author.display_name
+        && person.display_name.as_ref() != Some(name)
+    {
+        store.add_also_known_as(&person.id, name.clone()).await?;
+    }
+
+    let conversation = store
+        .ensure_conversation(
+            &event.conversation.transport_kind,
+            &event.conversation.transport_id,
+            event.conversation.display_name.clone(),
+            event.conversation.metadata.clone(),
+        )
+        .await?;
+
+    store.add_participant(&conversation.id, &person.id).await?;
+
+    event.person_id = Some(person.id);
+    event.conversation_id = Some(conversation.id);
+
+    Ok(event)
+}
+
+async fn resolve_reset_event(mut event: ResetEvent, store: &impl LivviStore) -> Result<ResetEvent> {
     let person = store
         .ensure_identity(
             &event.author.transport_kind,

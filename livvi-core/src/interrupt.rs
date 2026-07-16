@@ -86,6 +86,69 @@ fn short_id(id: &str) -> &str {
     }
 }
 
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResetEvent {
+    pub transport_kind: String,
+    pub author: ExternalAuthor,
+    pub conversation: ExternalConversation,
+    pub person_id: Option<PersonId>,
+    pub conversation_id: Option<ConversationId>,
+    pub metadata: Value,
+    pub timestamp: Option<OffsetDateTime>,
+}
+
+impl Debug for ResetEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResetEvent")
+            .field("transport", &self.transport_kind)
+            .field("author", &self.person_id.as_ref().map(|p| short_id(&p.0)))
+            .field(
+                "conv",
+                &self.conversation_id.as_ref().map(|c| short_id(&c.0)),
+            )
+            .finish()
+    }
+}
+
+impl Display for ResetEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.reset", self.transport_kind)?;
+        if let Some(person) = &self.person_id {
+            write!(f, " person={}", short_id(&person.0))?;
+        } else if let Some(name) = &self.author.display_name {
+            write!(f, " author={}", name)?;
+        } else {
+            write!(f, " author={}", self.author.transport_id)?;
+        }
+        if let Some(conv) = &self.conversation_id {
+            write!(f, " conv={}", short_id(&conv.0))?;
+        } else if let Some(name) = &self.conversation.display_name {
+            write!(f, " conv={}", name)?;
+        } else {
+            write!(f, " conv={}", self.conversation.transport_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl ResetEvent {
+    pub fn new(
+        transport_kind: impl Into<String>,
+        author: ExternalAuthor,
+        conversation: ExternalConversation,
+    ) -> Self {
+        Self {
+            transport_kind: transport_kind.into(),
+            author,
+            conversation,
+            person_id: None,
+            conversation_id: None,
+            metadata: Value::Null,
+            timestamp: Some(OffsetDateTime::now_utc()),
+        }
+    }
+}
+
 impl ExternalEvent {
     /// Format the event as an XML message for the model's context.
     ///
@@ -184,12 +247,14 @@ fn xml_escape(s: &str) -> String {
 #[derive(Clone, PartialEq)]
 pub enum Interrupt {
     ExternalEvent(ExternalEvent),
+    Reset(ResetEvent),
 }
 
 impl Debug for Interrupt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Interrupt::ExternalEvent(event) => Display::fmt(event, f),
+            Interrupt::Reset(event) => Display::fmt(event, f),
         }
     }
 }
@@ -198,6 +263,7 @@ impl Display for Interrupt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Interrupt::ExternalEvent(event) => Display::fmt(event, f),
+            Interrupt::Reset(event) => Display::fmt(event, f),
         }
     }
 }
@@ -206,6 +272,11 @@ impl Interrupt {
     /// Create an interrupt from a raw external event.
     pub fn external_event(event: ExternalEvent) -> Self {
         Interrupt::ExternalEvent(event)
+    }
+
+    /// Create an interrupt that wipes the in-memory context for a conversation.
+    pub fn reset(event: ResetEvent) -> Self {
+        Interrupt::Reset(event)
     }
 
     /// Convenience constructor for simple text input in tests and examples.

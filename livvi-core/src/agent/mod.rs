@@ -168,6 +168,10 @@ impl<S: Sync + Send + 'static> Agent<S> {
                                 .conversation_id
                                 .clone()
                                 .unwrap_or_else(|| ConversationId::from("global")),
+                            Interrupt::Reset(event) => event
+                                .conversation_id
+                                .clone()
+                                .unwrap_or_else(|| ConversationId::from("global")),
                         };
                         tracing::info!(
                             conversation_id = %conversation_id,
@@ -199,7 +203,7 @@ mod tests {
     use super::*;
     use crate::{
         compaction::{Compactor, WindowCompactor},
-        interrupt::{ExternalEvent, Interrupt},
+        interrupt::{ExternalEvent, Interrupt, ResetEvent},
         model::Message,
         provider::{MockProvider, ProviderEvent},
         tool::Toolbox,
@@ -442,5 +446,78 @@ mod tests {
 
         assert_eq!(a_calls, vec![1, 3]);
         assert_eq!(b_calls, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn reset_interrupt_clears_context() {
+        let provider = MockProvider::new(vec![]);
+        let toolbox = Toolbox::<()>::new();
+        let (_input_tx, input_rx) = mpsc::channel(4);
+
+        let (_rx, mut agent) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_input(input_rx)
+            .with_state(())
+            .with_toolbox(toolbox)
+            .with_soul("test soul".to_string())
+            .with_compactor(WindowCompactor::default())
+            .build()
+            .unwrap();
+
+        let conversation_id = ConversationId::from("test");
+        let mut context = Context::new("test soul", Some(conversation_id.clone()));
+        context.push_user("hello", None);
+        context.push_assistant("hi", None::<String>);
+
+        let reset_interrupt = Interrupt::reset(ResetEvent::new(
+            "internal",
+            crate::interrupt::ExternalAuthor {
+                transport_kind: "internal".to_string(),
+                transport_id: "user".to_string(),
+                display_name: None,
+                metadata: serde_json::Value::Null,
+            },
+            crate::interrupt::ExternalConversation {
+                transport_kind: "internal".to_string(),
+                transport_id: "test".to_string(),
+                display_name: None,
+                metadata: serde_json::Value::Null,
+            },
+        ));
+
+        agent
+            .handle_interrupt(reset_interrupt, &mut context, &conversation_id)
+            .await
+            .unwrap();
+
+        assert!(context.turns.is_empty());
+        assert_eq!(context.system.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn empty_response_is_replaced_with_no_content() {
+        let provider = MockProvider::new(vec![]);
+        let toolbox = Toolbox::<()>::new();
+        let (_input_tx, input_rx) = mpsc::channel(4);
+
+        let (_rx, mut agent) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_input(input_rx)
+            .with_state(())
+            .with_toolbox(toolbox)
+            .with_soul("test soul".to_string())
+            .with_compactor(WindowCompactor::default())
+            .build()
+            .unwrap();
+
+        let mut context = Context::new("test soul", Some("test".into()));
+        agent
+            .run_turn(Interrupt::message("hello"), &mut context, &"test".into())
+            .await
+            .unwrap();
+
+        let last = context.turns.last().expect("should have a turn");
+        assert_eq!(last.role, crate::model::Role::Assistant);
+        assert_eq!(last.content.as_deref(), Some("(no content)"));
     }
 }

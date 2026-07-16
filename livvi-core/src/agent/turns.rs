@@ -52,7 +52,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         info!("turn started");
         let _ = self.output.send(AgentEvent::Started);
 
-        if !matches!(interrupt, Interrupt::ExternalEvent(..)) {
+        let Interrupt::ExternalEvent(event) = &interrupt else {
             let msg = format!("Unsupported interrupt type: {:?}", interrupt);
             tracing::error!(%msg);
             let _ = self.output.send(AgentEvent::Error(msg.clone()));
@@ -60,9 +60,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 .output
                 .send(AgentEvent::Status("Unsupported interrupt type".into()));
             return Ok(Some(interrupt));
-        }
-
-        let Interrupt::ExternalEvent(event) = &interrupt;
+        };
         if event.content.is_some() {
             user_content = event.to_xml_message();
 
@@ -261,6 +259,14 @@ impl<S: Sync + Send + 'static> Agent<S> {
             }
 
             break Some(iteration_response);
+        };
+
+        let final_response = match final_response.as_deref() {
+            Some(text) if !text.is_empty() => final_response,
+            _ => {
+                context.push_assistant("(no content)", None::<String>);
+                Some("(no content)".to_string())
+            }
         };
 
         info!(
