@@ -25,6 +25,17 @@ pub(crate) fn clean_assistant_text(content: impl Into<String>) -> String {
         .to_string()
 }
 
+/// Replace empty assistant content with a placeholder so that providers which
+/// reject empty assistant messages (e.g. Moonshot) still receive a valid turn.
+fn non_empty_assistant_content(content: impl Into<String>) -> String {
+    let content = content.into();
+    if content.is_empty() {
+        "(no content)".to_string()
+    } else {
+        content
+    }
+}
+
 impl Context {
     /// Create a new context with a given soul file and optional conversation id.
     /// The soul file is stored as a system message in the context.
@@ -62,6 +73,7 @@ impl Context {
     /// Push an output (assistant) message to the context, optionally with
     /// thinking text.
     pub fn push_assistant(&mut self, content: impl Into<String>, thinking_content: Option<String>) {
+        let content = non_empty_assistant_content(content);
         let mut msg = Message::assistant(content, thinking_content);
         msg.conversation_id = self.conversation_id.clone();
         self.turns.push(msg);
@@ -75,6 +87,7 @@ impl Context {
         content: Option<impl Into<String>>,
         thinking_content: Option<impl Into<String>>,
     ) {
+        let content = content.map(non_empty_assistant_content);
         let mut msg = Message::with_tool_calls(calls, content, thinking_content);
         msg.conversation_id = self.conversation_id.clone();
         self.turns.push(msg);
