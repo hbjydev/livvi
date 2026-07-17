@@ -3,7 +3,7 @@ use livvi_store::ConversationId;
 
 use crate::{AgentEvent, agent::Agent, context::Context, interrupt::Interrupt};
 
-impl<S: Sync + Send + 'static> Agent<S> {
+impl Agent {
     pub(super) async fn handle_interrupt(
         &mut self,
         interrupt: Interrupt,

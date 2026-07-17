@@ -1,7 +1,9 @@
 pub mod tools;
 
+mod plugin;
 mod state;
 
+pub use plugin::DiscordPlugin;
 pub use state::DiscordState;
 
 use std::collections::HashSet;

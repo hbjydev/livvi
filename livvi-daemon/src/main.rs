@@ -1,135 +1,29 @@
-use anyhow::{Context, Result};
-use livvi_core::{
-    agent::Agent,
-    compaction::WindowCompactor,
-    interrupt::{AllowToolEvent, ExternalEvent, Interrupt, ResetEvent},
-    memory::MemoryProvider,
-    summarizer::Summarizer,
-    tool::Toolbox,
-};
-use livvi_discord::tools::{discord_react, discord_send};
-use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
+use anyhow::{Context, Result, anyhow};
+use livvi_core::{agent::Agent, compaction::WindowCompactor, summarizer::Summarizer};
+use livvi_discord::DiscordPlugin;
 use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
-use livvi_memini::MeminiMemoryProvider;
+use livvi_memini::MeminiPlugin;
 use livvi_openai::OpenAIChatCompletionsProvider;
-use livvi_store::{LivviSqliteStore, LivviStore};
-use livvi_web::WebState;
-use livvi_web::tools::{web_fetch, web_search};
+use livvi_store::LivviSqliteStore;
+use livvi_web::WebPlugin;
 use opentelemetry::global;
 use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
-use std::collections::HashSet;
 use std::env;
 use std::io::IsTerminal;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-pub struct AppState {
-    pub discord: DiscordState,
-    pub memory: Arc<dyn MemoryProvider>,
-    pub web: WebState,
-}
-
-impl AsRef<DiscordState> for AppState {
-    fn as_ref(&self) -> &DiscordState {
-        &self.discord
-    }
-}
-
-impl AsRef<WebState> for AppState {
-    fn as_ref(&self) -> &WebState {
-        &self.web
-    }
-}
-
-impl AsRef<dyn MemoryProvider> for AppState {
-    fn as_ref(&self) -> &dyn MemoryProvider {
-        &*self.memory
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing().with_context(|| "failed to initialize tracing")?;
     info!("Starting Livvi...");
 
-    let discord_token = env::var("LIVVI_DISCORD_TOKEN")
-        .or_else(|_| env::var("DISCORD_TOKEN"))
-        .ok();
-
     let openai_api_key = env::var("LIVVI_OPENAI_API_KEY").ok();
     let openai_model =
         env::var("LIVVI_OPENAI_MODEL_NAME").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let openai_base_url = env::var("LIVVI_OPENAI_API_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-
-    let memini_base_url = env::var("LIVVI_MEMINI_BASE_URL").ok();
-    let memini_api_key = env::var("LIVVI_MEMINI_API_KEY").ok();
-    let memini_namespace =
-        env::var("LIVVI_MEMINI_NAMESPACE").unwrap_or_else(|_| "livvi".to_string());
-
-    let searxng_url = env::var("LIVVI_SEARXNG_URL").ok().filter(|s| !s.is_empty());
-    let web_configured = searxng_url.is_some();
-    if web_configured {
-        info!("web_search and web_fetch enabled via LIVVI_SEARXNG_URL");
-    } else {
-        info!("LIVVI_SEARXNG_URL not set; web_search and web_fetch disabled");
-    }
-
-    let memini_configured = memini_base_url.as_ref().is_some_and(|u| !u.is_empty())
-        && memini_api_key.as_ref().is_some_and(|k| !k.is_empty());
-
-    // Without a Discord token there is no way to feed the agent loop, so just
-    // wait for a shutdown signal.
-    let discord_token = match discord_token {
-        Some(token) => token,
-        None => {
-            warn!(
-                "No Discord token configured (LIVVI_DISCORD_TOKEN or DISCORD_TOKEN); \
-                 waiting for shutdown signal..."
-            );
-            shutdown_signal().await;
-            return Ok(());
-        }
-    };
-
-    let database_url =
-        env::var("LIVVI_DATABASE_URL").unwrap_or_else(|_| "sqlite:livvi.db?mode=rwc".to_string());
-    let store = LivviSqliteStore::connect(&database_url).await?;
-
-    let (raw_tx, mut raw_rx) = mpsc::channel::<Interrupt>(256);
-    let (resolved_tx, resolved_rx) = mpsc::channel::<Interrupt>(256);
-
-    let discord_state = Arc::new(DiscordState::new(&discord_token));
-
-    let allowed_tool_user_ids: HashSet<u64> = env::var("LIVVI_DISCORD_ALLOW_TOOL_USER_IDS")
-        .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<u64>().ok())
-        .collect();
-
-    let transport = DiscordTransport::new(&discord_token, raw_tx, allowed_tool_user_ids).await?;
-
-    let memory_provider: Arc<dyn MemoryProvider> = if memini_configured {
-        Arc::new(MeminiMemoryProvider::new(
-            livvi_memini::MeminiClient::new(
-                memini_base_url.expect("base url checked above"),
-                memini_api_key.expect("api key checked above"),
-            ),
-            &memini_namespace,
-        ))
-    } else {
-        Arc::new(livvi_core::memory::noop::NoopMemoryProvider)
-    };
-
-    let app_state = AppState {
-        discord: (*discord_state).clone(),
-        memory: memory_provider,
-        web: WebState::new(searxng_url),
-    };
 
     let (provider, compactor): (
         Box<dyn livvi_core::provider::Provider>,
@@ -162,78 +56,75 @@ async fn main() -> Result<()> {
         }
     };
 
-    let memory_for_agent = memini_configured.then(|| app_state.memory.clone_dyn());
+    let database_url =
+        env::var("LIVVI_DATABASE_URL").unwrap_or_else(|_| "sqlite:livvi.db?mode=rwc".to_string());
+    let store = LivviSqliteStore::connect(&database_url).await?;
 
     let mut builder = Agent::builder()
         .with_provider(provider)
-        .with_state(app_state)
-        .with_tool_permission_store(store.clone())
-        .with_toolbox({
-            let mut toolbox = Toolbox::new();
-            toolbox.add_tool(discord_send);
-            toolbox.add_tool(discord_react);
-            if web_configured {
-                toolbox.add_tool(web_fetch);
-                toolbox.add_tool(web_search);
-            }
-            toolbox
-        })
-        .with_soul(format!(
-            "{}\n\n{}",
-            include_str!("../../SOUL.md"),
-            DISCORD_INSTRUCTIONS
-        ))
-        .with_input(resolved_rx)
-        .with_compactor(compactor);
+        .with_compactor(compactor)
+        .with_store(store.clone())
+        .with_soul(include_str!("../../SOUL.md").to_string());
 
-    if let Some(memory_provider) = memory_for_agent {
-        builder = builder.with_memory_provider(memory_provider)?;
+    if let Some(plugin) = DiscordPlugin::from_env() {
+        builder = builder.with_plugin(plugin)?;
+    } else {
+        warn!(
+            "No Discord token configured (LIVVI_DISCORD_TOKEN or DISCORD_TOKEN); Discord transport disabled"
+        );
     }
+    if let Some(plugin) = MeminiPlugin::from_env() {
+        info!("memini memory provider enabled");
+        builder = builder.with_plugin(plugin)?;
+    } else {
+        info!(
+            "memini not configured (LIVVI_MEMINI_BASE_URL/LIVVI_MEMINI_API_KEY); memory tools disabled"
+        );
+    }
+    let web_plugin = WebPlugin::from_env();
+    if web_plugin.has_search() {
+        info!("web_search and web_fetch enabled via LIVVI_SEARXNG_URL");
+    } else {
+        info!("LIVVI_SEARXNG_URL not set; web_fetch enabled, web_search disabled");
+    }
+    builder = builder.with_plugin(web_plugin)?;
 
-    let (_agent_events, agent) = builder.build()?;
+    // Hold a sender so the agent's input channel stays open even with no transports.
+    let _interrupt_tx = builder.interrupt_sender();
 
-    let agent_handle = tokio::spawn(async move {
-        if let Err(e) = agent.run().await {
-            tracing::error!("agent loop error: {e}");
-        }
-    });
+    let (_agent_events, agent, mut plugin_tasks) = builder.build()?;
 
-    let resolver_handle = tokio::spawn(async move {
-        while let Some(interrupt) = raw_rx.recv().await {
-            match resolve_interrupt(interrupt, &store).await {
-                Ok(Some(resolved)) => {
-                    if resolved_tx.send(resolved).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => error!("failed to resolve interrupt: {e}"),
-            }
-        }
-    });
+    let agent_handle = tokio::spawn(async move { agent.run().await });
 
-    let mut discord_handle = tokio::spawn(async move {
-        if let Err(e) = transport.run().await {
-            tracing::error!("Discord transport error: {e}");
-        }
-    });
-
-    tokio::select! {
+    let result = tokio::select! {
         _ = shutdown_signal() => {
             info!("Shutdown signal received, terminating...");
+            Ok(())
         }
-        _ = agent_handle => {
-            warn!("agent loop exited");
+        result = agent_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    warn!("agent loop exited");
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(e.context("agent loop error")),
+                Err(e) => Err(anyhow!("agent loop task panicked: {e}")),
+            }
         }
-        _ = resolver_handle => {
-            warn!("event resolver exited");
+        result = plugin_tasks.join_next(), if !plugin_tasks.is_empty() => {
+            match result {
+                Some(Ok(Ok(()))) => {
+                    warn!("a plugin task exited");
+                    Ok(())
+                }
+                Some(Ok(Err(e))) => Err(e.context("plugin task failed")),
+                Some(Err(e)) => Err(anyhow!("plugin task panicked: {e}")),
+                None => Ok(()),
+            }
         }
-        _ = &mut discord_handle => {
-            warn!("Discord transport exited");
-        }
-    }
+    };
 
-    Ok(())
+    result
 }
 
 fn init_tracing() -> Result<()> {
@@ -281,117 +172,6 @@ fn init_tracing() -> Result<()> {
     Ok(())
 }
 
-async fn resolve_interrupt(
-    interrupt: Interrupt,
-    store: &impl LivviStore,
-) -> Result<Option<Interrupt>> {
-    match interrupt {
-        Interrupt::ExternalEvent(event) => {
-            let resolved = resolve_external_event(event, store).await?;
-            Ok(Some(Interrupt::external_event(resolved)))
-        }
-        Interrupt::Reset(event) => {
-            let resolved = resolve_reset_event(event, store).await?;
-            Ok(Some(Interrupt::reset(resolved)))
-        }
-        Interrupt::AllowTool(event) => {
-            resolve_allow_tool_event(event, store).await?;
-            Ok(None)
-        }
-    }
-}
-
-async fn resolve_external_event(
-    mut event: ExternalEvent,
-    store: &impl LivviStore,
-) -> Result<ExternalEvent> {
-    let person = store
-        .ensure_identity(
-            &event.author.transport_kind,
-            &event.author.transport_id,
-            event.author.display_name.clone(),
-            event.author.metadata.clone(),
-        )
-        .await?;
-
-    if let Some(name) = &event.author.display_name
-        && person.display_name.as_ref() != Some(name)
-    {
-        store.add_also_known_as(&person.id, name.clone()).await?;
-    }
-
-    let conversation = store
-        .ensure_conversation(
-            &event.conversation.transport_kind,
-            &event.conversation.transport_id,
-            event.conversation.display_name.clone(),
-            event.conversation.metadata.clone(),
-        )
-        .await?;
-
-    store.add_participant(&conversation.id, &person.id).await?;
-
-    event.person_id = Some(person.id);
-    event.conversation_id = Some(conversation.id);
-
-    Ok(event)
-}
-
-async fn resolve_reset_event(mut event: ResetEvent, store: &impl LivviStore) -> Result<ResetEvent> {
-    let person = store
-        .ensure_identity(
-            &event.author.transport_kind,
-            &event.author.transport_id,
-            event.author.display_name.clone(),
-            event.author.metadata.clone(),
-        )
-        .await?;
-
-    if let Some(name) = &event.author.display_name
-        && person.display_name.as_ref() != Some(name)
-    {
-        store.add_also_known_as(&person.id, name.clone()).await?;
-    }
-
-    let conversation = store
-        .ensure_conversation(
-            &event.conversation.transport_kind,
-            &event.conversation.transport_id,
-            event.conversation.display_name.clone(),
-            event.conversation.metadata.clone(),
-        )
-        .await?;
-
-    store.add_participant(&conversation.id, &person.id).await?;
-
-    event.person_id = Some(person.id);
-    event.conversation_id = Some(conversation.id);
-
-    Ok(event)
-}
-
-async fn resolve_allow_tool_event(
-    mut event: AllowToolEvent,
-    store: &impl LivviStore,
-) -> Result<()> {
-    let conversation = store
-        .ensure_conversation(
-            &event.conversation.transport_kind,
-            &event.conversation.transport_id,
-            event.conversation.display_name.clone(),
-            event.conversation.metadata.clone(),
-        )
-        .await?;
-
-    store
-        .set_tool_permission(&conversation.id, &event.tool_name, true)
-        .await?;
-
-    event.conversation_id = Some(conversation.id);
-
-    Ok(())
-}
-
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -423,15 +203,13 @@ mod tests {
         async_trait,
         interrupt::{ExternalAuthor, ExternalConversation, ExternalEvent, Interrupt},
         provider::{MockProvider, ProviderEvent},
+        resolve::resolve_external_event,
         summarizer::Summarizer,
-        tool::Toolbox,
     };
     use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore, LcmStore};
-    use livvi_store::{ConversationStorage, MockStore, PersonStorage};
+    use livvi_store::MockStore;
     use serde_json::json;
     use std::sync::Arc;
-
-    use super::*;
 
     #[derive(Clone)]
     struct MockSummarizer;
@@ -492,16 +270,12 @@ mod tests {
         };
         let compactor = LcmCompactor::new(summarizer, lcm_store.clone(), config);
 
-        let (input_tx, input_rx) = tokio::sync::mpsc::channel(16);
-        let (_rx, agent) = Agent::builder()
+        let builder = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_state(())
-            .with_toolbox(Toolbox::new())
             .with_soul("test soul".to_string())
-            .with_input(input_rx)
-            .with_compactor(compactor)
-            .build()
-            .unwrap();
+            .with_compactor(compactor);
+        let input_tx = builder.interrupt_sender();
+        let (_rx, agent, _tasks) = builder.build().unwrap();
 
         let send_conversation_id = conversation_id.clone();
         for i in 0..12 {
@@ -532,98 +306,5 @@ mod tests {
             !summaries.is_empty(),
             "expected at least one persisted summary"
         );
-    }
-
-    #[tokio::test]
-    async fn resolver_creates_person_and_conversation() {
-        let store = MockStore::new();
-
-        let event = ExternalEvent {
-            transport_kind: "discord".to_string(),
-            event_type: "message".to_string(),
-            content: Some("hello".to_string()),
-            author: ExternalAuthor {
-                transport_kind: "discord".to_string(),
-                transport_id: "12345".to_string(),
-                display_name: Some("hayden".to_string()),
-                metadata: json!({ "discriminator": "0001" }),
-            },
-            conversation: ExternalConversation {
-                transport_kind: "discord".to_string(),
-                transport_id: "chan-1".to_string(),
-                display_name: Some("general".to_string()),
-                metadata: json!({ "guild_id": "111", "is_dm": false }),
-            },
-            person_id: None,
-            conversation_id: None,
-            metadata: json!({}),
-            timestamp: None,
-        };
-
-        let resolved = resolve_external_event(event, &store).await.unwrap();
-
-        assert!(resolved.person_id.is_some());
-        assert!(resolved.conversation_id.is_some());
-
-        let person = store
-            .get_person(resolved.person_id.as_ref().unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(person.display_name, Some("hayden".to_string()));
-
-        let participants = store
-            .get_participants(resolved.conversation_id.as_ref().unwrap())
-            .await
-            .unwrap();
-        assert_eq!(participants.len(), 1);
-        assert_eq!(participants[0].id, resolved.person_id.unwrap());
-    }
-
-    #[tokio::test]
-    async fn resolver_adds_alias_when_display_name_differs() {
-        let store = MockStore::new();
-
-        let first = ExternalEvent {
-            transport_kind: "discord".to_string(),
-            event_type: "message".to_string(),
-            content: Some("hello".to_string()),
-            author: ExternalAuthor {
-                transport_kind: "discord".to_string(),
-                transport_id: "12345".to_string(),
-                display_name: Some("hayden".to_string()),
-                metadata: json!({}),
-            },
-            conversation: ExternalConversation {
-                transport_kind: "discord".to_string(),
-                transport_id: "chan-1".to_string(),
-                display_name: None,
-                metadata: json!({}),
-            },
-            person_id: None,
-            conversation_id: None,
-            metadata: json!({}),
-            timestamp: None,
-        };
-
-        let _ = resolve_external_event(first.clone(), &store).await.unwrap();
-
-        let second = ExternalEvent {
-            author: ExternalAuthor {
-                display_name: Some("hayden2".to_string()),
-                ..first.author.clone()
-            },
-            ..first.clone()
-        };
-
-        let resolved = resolve_external_event(second, &store).await.unwrap();
-
-        let person = store
-            .get_person(resolved.person_id.as_ref().unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(person.display_name, Some("hayden".to_string()));
-        assert_eq!(person.also_known_as, vec!["hayden2".to_string()]);
     }
 }

@@ -31,7 +31,7 @@ struct StreamIteration {
     cancelled_by: Option<Interrupt>,
 }
 
-impl<S: Sync + Send + 'static> Agent<S> {
+impl Agent {
     #[tracing::instrument(skip(self, interrupt, context, conversation_id), fields(
         otel.name = "invoke_agent",
         conversation_id = %conversation_id,
@@ -180,7 +180,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
 
                         let _ = self.output.send(AgentEvent::ToolCallStarted);
 
-                        let ctx = ToolContext::<S> {
+                        let ctx = ToolContext {
                             agent_context: context,
                             tool_call_id: &tool_call.id,
                             state: &self.state,
@@ -488,7 +488,7 @@ impl<S: Sync + Send + 'static> Agent<S> {
         &self,
         conversation_id: &livvi_store::ConversationId,
     ) -> Result<HashMap<String, bool>> {
-        if let Some(store) = &self.tool_permission_store {
+        if let Some(store) = &self.store {
             store.list_tool_permissions(conversation_id).await
         } else {
             Ok(HashMap::new())

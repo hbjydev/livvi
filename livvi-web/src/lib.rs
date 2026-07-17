@@ -2,6 +2,8 @@
 
 pub mod tools;
 
+mod plugin;
 mod state;
 
+pub use plugin::WebPlugin;
 pub use state::WebState;

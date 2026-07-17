@@ -59,7 +59,7 @@ mod tests {
 
         let mut provider = MockProvider::new(turns);
         let ctx = Context::new("", None);
-        let tools = Toolbox::<()>::new();
+        let tools = Toolbox::new();
         let (tx, mut rx) = mpsc::channel(256);
 
         tokio::spawn(async move {

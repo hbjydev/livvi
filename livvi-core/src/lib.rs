@@ -13,6 +13,9 @@ pub mod context;
 pub mod interrupt;
 pub mod memory;
 pub mod model;
+pub mod plugin;
+pub mod resolve;
+pub mod state;
 pub mod summarizer;
 
 #[derive(Debug, Clone)]

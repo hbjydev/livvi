@@ -209,8 +209,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = WebState::new(None);
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(None));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_fetch);
 
         let result = toolbox
@@ -220,7 +221,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({"url": format!("{}/page", server.uri()), "max_length": 0}),
@@ -255,8 +256,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = WebState::new(None);
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(None));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_fetch);
 
         let result = toolbox
@@ -266,7 +268,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({
@@ -299,8 +301,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = WebState::new(None);
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(None));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_fetch);
 
         let result = toolbox
@@ -310,7 +313,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({"url": format!("{}/plain.txt", server.uri()), "max_length": 0}),
@@ -335,8 +338,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = WebState::new(None);
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(None));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_fetch);
 
         let result = toolbox
@@ -346,7 +350,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({"url": format!("{}/missing", server.uri())}),

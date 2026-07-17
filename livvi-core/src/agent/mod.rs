@@ -1,47 +1,59 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
-use anyhow::{Result, anyhow};
-use livvi_store::{ConversationId, ToolPermissionStorage};
+use anyhow::{Context as _, Result, anyhow};
+use livvi_store::ConversationId;
 use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
+use tracing::Instrument;
 
 use crate::{
-    AgentEvent, compaction::Compactor, context::Context, interrupt::Interrupt,
-    memory::MemoryProvider, tool::Toolbox,
+    AgentEvent,
+    compaction::Compactor,
+    context::Context,
+    interrupt::Interrupt,
+    memory::MemoryProvider,
+    state::StateMap,
+    tool::{ToolHandler, Toolbox},
 };
 
 mod interrupts;
-mod tools;
 mod turns;
 
-pub struct AgentBuilder<S: Sync + Send + 'static> {
+pub struct AgentBuilder {
     provider: Option<Box<dyn crate::provider::Provider>>,
-    state: Option<Arc<S>>,
-    input: Option<mpsc::Receiver<Interrupt>>,
     soul: Option<String>,
-    toolbox: Option<Toolbox<S>>,
+    instructions: Vec<String>,
+    toolbox: Toolbox,
+    state: StateMap,
     compactor: Option<Box<dyn Compactor>>,
     memory_provider: Option<Box<dyn MemoryProvider>>,
-    tool_permission_store: Option<Arc<dyn ToolPermissionStorage>>,
+    store: Option<Arc<dyn livvi_store::LivviStore>>,
+    tasks: Vec<crate::plugin::PluginTask>,
+    interrupt_tx: mpsc::Sender<Interrupt>,
+    interrupt_rx: Option<mpsc::Receiver<Interrupt>>,
 }
 
-impl<S: Sync + Send + 'static> Default for AgentBuilder<S> {
+impl Default for AgentBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Sync + Send + 'static> AgentBuilder<S> {
+impl AgentBuilder {
     pub fn new() -> Self {
+        let (interrupt_tx, interrupt_rx) = mpsc::channel(256);
         Self {
             provider: None,
-            state: None,
-            input: None,
             soul: None,
-            toolbox: None,
+            instructions: Vec::new(),
+            toolbox: Toolbox::new(),
+            state: StateMap::new(),
             compactor: None,
             memory_provider: None,
-            tool_permission_store: None,
+            store: None,
+            tasks: Vec::new(),
+            interrupt_tx,
+            interrupt_rx: Some(interrupt_rx),
         }
     }
 
@@ -50,19 +62,22 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         self
     }
 
-    pub fn with_state(mut self, state: S) -> Self {
-        self.state = Some(Arc::new(state));
+    /// Insert a piece of state, made available to tools via the `State<T>` extractor.
+    pub fn with_state<T: Send + Sync + 'static>(mut self, state: T) -> Self {
+        self.state.insert(state);
         self
     }
 
-    pub fn with_toolbox(mut self, toolbox: Toolbox<S>) -> Self {
-        self.toolbox = Some(toolbox);
+    /// Register a `#[tool]` function's generated handler.
+    pub fn with_tool(mut self, tool: impl ToolHandler) -> Self {
+        self.toolbox.add_tool(tool);
         self
     }
 
-    pub fn with_input(mut self, input: mpsc::Receiver<Interrupt>) -> Self {
-        self.input = Some(input);
-        self
+    /// A sender feeding the agent's input queue. Clone it to forward interrupts
+    /// into the agent from outside (transports, tests, examples).
+    pub fn interrupt_sender(&self) -> mpsc::Sender<Interrupt> {
+        self.interrupt_tx.clone()
     }
 
     pub fn with_soul(mut self, soul: String) -> Self {
@@ -75,47 +90,69 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
         self
     }
 
-    pub fn with_tool_permission_store(
-        mut self,
-        store: impl ToolPermissionStorage + 'static,
-    ) -> Self {
-        self.tool_permission_store = Some(Arc::new(store));
+    /// Install the store used for interrupt resolution and tool permissions.
+    pub fn with_store(mut self, store: impl livvi_store::LivviStore) -> Self {
+        self.store = Some(Arc::new(store));
         self
     }
 
-    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Result<Self> {
+    pub fn with_memory_provider(mut self, provider: impl MemoryProvider) -> Self {
         self.memory_provider = Some(Box::new(provider));
+        self
+    }
 
-        if self.toolbox.is_none() {
-            return Err(anyhow!(
-                "Toolbox must be set before adding memory provider tools"
-            ));
-        }
-
-        let tbr = self.toolbox.as_mut().unwrap();
-        tbr.add_tool(crate::memory::tools::memory_recall);
-        tbr.add_tool(crate::memory::tools::memory_remember);
-        tbr.add_tool(crate::memory::tools::memory_briefing);
-        tbr.add_tool(crate::memory::tools::memory_get);
-        tbr.add_tool(crate::memory::tools::memory_list);
-        tbr.add_tool(crate::memory::tools::memory_update);
-        tbr.add_tool(crate::memory::tools::memory_forget);
-
+    /// Register a plugin, letting it contribute state, tools, instructions,
+    /// a memory provider, and background tasks.
+    pub fn with_plugin(mut self, plugin: impl crate::plugin::Plugin) -> Result<Self> {
+        let name = plugin.name().to_string();
+        let mut ctx = crate::plugin::PluginContext {
+            state: &mut self.state,
+            toolbox: &mut self.toolbox,
+            instructions: &mut self.instructions,
+            memory_provider: &mut self.memory_provider,
+            tasks: &mut self.tasks,
+            interrupt_tx: self.interrupt_tx.clone(),
+        };
+        plugin
+            .register(&mut ctx)
+            .with_context(|| format!("failed to register plugin '{name}'"))?;
+        tracing::info!(plugin = %name, "registered plugin");
         Ok(self)
     }
 
-    pub fn build(self) -> Result<(broadcast::Receiver<AgentEvent>, Agent<S>)> {
+    /// Build the agent.
+    ///
+    /// Spawns plugin-registered background tasks, so this must be called inside
+    /// a Tokio runtime. Returns the agent event stream, the agent, and the set
+    /// of spawned plugin tasks.
+    pub fn build(
+        mut self,
+    ) -> Result<(
+        broadcast::Receiver<AgentEvent>,
+        Agent,
+        tokio::task::JoinSet<Result<()>>,
+    )> {
         let provider = self.provider.ok_or(anyhow!("Provider is required"))?;
-        let state = self.state.ok_or(anyhow!("State is required"))?;
-        let toolbox = self.toolbox.ok_or(anyhow!("Toolbox is required"))?;
-        let input = self
-            .input
-            .ok_or(anyhow!("Input mpsc receiver is required"))?;
-
         let soul = self.soul.ok_or(anyhow!("Soul is required"))?;
+
+        if self.memory_provider.is_some() {
+            self.toolbox.add_tool(crate::memory::tools::memory_recall);
+            self.toolbox.add_tool(crate::memory::tools::memory_remember);
+            self.toolbox.add_tool(crate::memory::tools::memory_briefing);
+            self.toolbox.add_tool(crate::memory::tools::memory_get);
+            self.toolbox.add_tool(crate::memory::tools::memory_list);
+            self.toolbox.add_tool(crate::memory::tools::memory_update);
+            self.toolbox.add_tool(crate::memory::tools::memory_forget);
+        }
+
+        let mut assembled = soul;
+        for fragment in &self.instructions {
+            assembled.push_str("\n\n");
+            assembled.push_str(fragment);
+        }
         let soul = format!(
             "{}\n\n{}\n\n{}\n\n{}",
-            soul,
+            assembled,
             include_str!("../../prompts/scratchpad.md"),
             include_str!("../../prompts/input-event-loop.md"),
             include_str!("../../prompts/memory.md")
@@ -125,39 +162,50 @@ impl<S: Sync + Send + 'static> AgentBuilder<S> {
             .compactor
             .unwrap_or_else(|| Box::new(crate::compaction::WindowCompactor::default()));
 
+        let input = self
+            .interrupt_rx
+            .take()
+            .expect("interrupt receiver already taken");
+
         let (tx, rx) = broadcast::channel(256);
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for task in self.tasks {
+            tasks.spawn(task);
+        }
 
         Ok((
             rx,
             Agent {
                 provider: Arc::new(provider),
-                state,
+                state: self.state,
                 input,
                 output: tx,
-                toolbox,
+                toolbox: self.toolbox,
                 soul,
                 compactor,
                 memory_provider: self.memory_provider,
-                tool_permission_store: self.tool_permission_store,
+                store: self.store,
             },
+            tasks,
         ))
     }
 }
 
-pub struct Agent<S: Sync + Send + 'static> {
+pub struct Agent {
     provider: Arc<Box<dyn crate::provider::Provider>>,
-    state: Arc<S>,
+    state: StateMap,
     input: mpsc::Receiver<Interrupt>,
     output: broadcast::Sender<AgentEvent>,
-    toolbox: Toolbox<S>,
+    toolbox: Toolbox,
     soul: String,
     compactor: Box<dyn Compactor>,
     memory_provider: Option<Box<dyn MemoryProvider>>,
-    tool_permission_store: Option<Arc<dyn ToolPermissionStorage>>,
+    store: Option<Arc<dyn livvi_store::LivviStore>>,
 }
 
-impl<S: Sync + Send + 'static> Agent<S> {
-    pub fn builder() -> AgentBuilder<S> {
+impl Agent {
+    pub fn builder() -> AgentBuilder {
         AgentBuilder::new()
     }
 
@@ -175,6 +223,34 @@ impl<S: Sync + Send + 'static> Agent<S> {
                 Some(interrupt) => {
                     let mut next_interrupt = Some(interrupt);
                     while let Some(interrupt) = next_interrupt {
+                        let interrupt = match &self.store {
+                            Some(store) => {
+                                let resolve_span = tracing::info_span!(
+                                    "resolve_interrupt",
+                                    otel.status_code = tracing::field::Empty,
+                                    otel.status_description = tracing::field::Empty,
+                                );
+                                let result =
+                                    crate::resolve::resolve_interrupt(interrupt, store.as_ref())
+                                        .instrument(resolve_span.clone())
+                                        .await;
+                                match result {
+                                    Ok(Some(resolved)) => resolved,
+                                    // AllowTool: permission granted, nothing to dispatch
+                                    Ok(None) => break,
+                                    Err(e) => {
+                                        resolve_span.record("otel.status_code", "ERROR");
+                                        resolve_span.record(
+                                            "otel.status_description",
+                                            tracing::field::display(&e),
+                                        );
+                                        tracing::error!("failed to resolve interrupt: {e}");
+                                        break;
+                                    }
+                                }
+                            }
+                            None => interrupt,
+                        };
                         let conversation_id = match &interrupt {
                             Interrupt::ExternalEvent(event) => event
                                 .conversation_id
@@ -222,14 +298,12 @@ mod tests {
         interrupt::{ExternalEvent, Interrupt, ResetEvent},
         model::Message,
         provider::{MockProvider, ProviderEvent},
-        tool::Toolbox,
     };
     use anyhow::Result;
     use async_trait::async_trait;
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     struct RecordingCompactor {
         calls: Arc<Mutex<Vec<usize>>>,
@@ -273,19 +347,14 @@ mod tests {
     #[tokio::test]
     async fn agent_invokes_compactor_each_turn() {
         let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
-        let toolbox = Toolbox::<()>::new();
-        let (_input_tx, input_rx) = mpsc::channel(4);
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let compactor = RecordingCompactor {
             calls: calls.clone(),
         };
 
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
             .with_soul("test soul".to_string())
             .with_compactor(compactor)
             .build()
@@ -316,15 +385,10 @@ mod tests {
         }
 
         let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
-        let mut toolbox = Toolbox::<()>::new();
-        toolbox.add_tool(required_tool);
 
-        let (_input_tx, input_rx) = mpsc::channel(4);
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
+            .with_tool(required_tool)
             .with_soul("test soul".to_string())
             .with_compactor(WindowCompactor::default())
             .build()
@@ -358,15 +422,10 @@ mod tests {
         }
 
         let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
-        let mut toolbox = Toolbox::<()>::new();
-        toolbox.add_tool(optional_tool);
 
-        let (_input_tx, input_rx) = mpsc::channel(4);
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
+            .with_tool(optional_tool)
             .with_soul("test soul".to_string())
             .with_compactor(WindowCompactor::default())
             .build()
@@ -399,17 +458,12 @@ mod tests {
     #[tokio::test]
     async fn agent_keeps_per_conversation_contexts_independent() {
         let provider = MockProvider::new(vec![ProviderEvent::Token("hi".to_string())]);
-        let toolbox = Toolbox::<()>::new();
-        let (_input_tx, input_rx) = mpsc::channel(4);
 
         let compactor = ConversationRecordingCompactor::default();
         let calls = compactor.calls.clone();
 
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
             .with_soul("test soul".to_string())
             .with_compactor(compactor)
             .build()
@@ -467,14 +521,9 @@ mod tests {
     #[tokio::test]
     async fn reset_interrupt_clears_context() {
         let provider = MockProvider::new(vec![]);
-        let toolbox = Toolbox::<()>::new();
-        let (_input_tx, input_rx) = mpsc::channel(4);
 
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
             .with_soul("test soul".to_string())
             .with_compactor(WindowCompactor::default())
             .build()
@@ -513,14 +562,9 @@ mod tests {
     #[tokio::test]
     async fn empty_response_is_replaced_with_no_content() {
         let provider = MockProvider::new(vec![]);
-        let toolbox = Toolbox::<()>::new();
-        let (_input_tx, input_rx) = mpsc::channel(4);
 
-        let (_rx, mut agent) = Agent::builder()
+        let (_rx, mut agent, _tasks) = Agent::builder()
             .with_provider(Box::new(provider))
-            .with_input(input_rx)
-            .with_state(())
-            .with_toolbox(toolbox)
             .with_soul("test soul".to_string())
             .with_compactor(WindowCompactor::default())
             .build()
@@ -535,5 +579,28 @@ mod tests {
         let last = context.turns.last().expect("should have a turn");
         assert_eq!(last.role, crate::model::Role::Assistant);
         assert_eq!(last.content.as_deref(), Some("(no content)"));
+    }
+
+    #[tokio::test]
+    async fn build_registers_memory_tools_only_with_memory_provider() {
+        let provider = MockProvider::new(vec![]);
+        let (_rx, agent, _tasks) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_soul("test soul".to_string())
+            .with_memory_provider(crate::memory::noop::NoopMemoryProvider)
+            .build()
+            .unwrap();
+
+        assert!(agent.toolbox.has_tool("memory_recall"));
+        assert!(agent.toolbox.has_tool("memory_forget"));
+
+        let provider = MockProvider::new(vec![]);
+        let (_rx, agent, _tasks) = Agent::builder()
+            .with_provider(Box::new(provider))
+            .with_soul("test soul".to_string())
+            .build()
+            .unwrap();
+
+        assert!(!agent.toolbox.has_tool("memory_recall"));
     }
 }

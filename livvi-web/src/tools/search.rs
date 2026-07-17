@@ -146,8 +146,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = WebState::new(Some(server.uri()));
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(Some(server.uri())));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_search);
 
         let result = toolbox
@@ -157,7 +158,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({"query": "rust programming", "limit": 1}),
@@ -175,8 +176,9 @@ mod tests {
 
     #[tokio::test]
     async fn web_search_errors_without_config() {
-        let state = WebState::new(None);
-        let mut toolbox = Toolbox::<WebState>::new();
+        let mut states = livvi_core::state::StateMap::new();
+        states.insert(WebState::new(None));
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(web_search);
 
         let result = toolbox
@@ -186,7 +188,7 @@ mod tests {
                 &livvi_core::tool::ToolContext {
                     agent_context: &AgentContext::new("soul", None),
                     tool_call_id: "call-1",
-                    state: &state,
+                    state: &states,
                     memory_provider: None,
                 },
                 serde_json::json!({"query": "rust"}),
