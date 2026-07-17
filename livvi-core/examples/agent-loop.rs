@@ -4,11 +4,10 @@ use anyhow::Result;
 use livvi_core::{
     agent::Agent,
     provider::{MockProvider, ProviderEvent},
-    tool::{Input, Toolbox, tool},
+    tool::{Input, tool},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct CalcInput {
@@ -22,15 +21,9 @@ async fn calc(Input(CalcInput { a, b }): Input<CalcInput>) -> i32 {
     a + b
 }
 
-pub struct AgentState;
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-
-    let state = AgentState;
-    let mut tools = Toolbox::new();
-    tools.add_tool(calc);
 
     let provider = MockProvider::new(vec![
         ProviderEvent::Token("Hello".to_string()),
@@ -38,14 +31,12 @@ async fn main() -> Result<()> {
         ProviderEvent::Token("world!".to_string()),
     ]);
 
-    let (input_tx, input_rx) = mpsc::channel(256);
-
-    let (mut rx, agent) = Agent::builder()
+    let builder = Agent::builder()
         .with_provider(Box::new(provider))
-        .with_input(input_rx)
-        .with_state(state)
-        .with_toolbox(tools)
-        .build()?;
+        .with_tool(calc)
+        .with_soul("example soul".to_string());
+    let input_tx = builder.interrupt_sender();
+    let (mut rx, agent, _tasks) = builder.build()?;
 
     input_tx
         .send(livvi_core::interrupt::Interrupt::message("Hello, world!"))

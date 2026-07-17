@@ -25,8 +25,7 @@ livvi-discord/     The Discord transport implementation
 livvi-openai/      The OpenAI LLM provider implementation
 livvi-store/       Backend-agnostic persistent storage (persons, conversations, etc.)
 livvi-web/         Web tools for the agent (web_search via SearxNG, web_fetch)
-livvi-daemon/      The shipped binary, which runs the various components of Livvi
-                   (provider, agent loop from livvi-core, etc)
+livvi-daemon/      The shipped binary: a thin composition root that wires env config into plugins and runs the agent from livvi-core
 ```
 
 ## Locked technical decisions
@@ -36,6 +35,7 @@ livvi-daemon/      The shipped binary, which runs the various components of Livv
 | Tools     | Implemented as async functions with a `#[tool]` attribute macro and Axum-style extractors (`Input<T>`, `State<T>`, etc) |
 | Providers | Implemented as traits, to allow ease of implementation & maintenance                                   |
 | Storage   | Backend-agnostic repository traits in `livvi-store`, with SQLite as the first implementation         |
+| Plugins   | Self-registering via `livvi_core::plugin::Plugin` + `Agent::builder().with_plugin(...)`               |
 
 ## Subsystem documentation
 

@@ -577,14 +577,13 @@ use crate::tool::{FromToolContext, ToolContext, ToolExtractError};
 
 /// Extractor that gives a tool access to the agent's configured memory provider.
 ///
-/// Use this instead of `State<dyn MemoryProvider>` so that memory tools work with any
-/// application state type `S`; the provider is supplied by the agent loop rather than the
-/// user state.
+/// Use this instead of `State<dyn MemoryProvider>`; the provider is supplied by the agent
+/// loop rather than by plugin-contributed state.
 pub struct MemoryProviderRef<'a>(pub &'a dyn MemoryProvider);
 
-impl<'a, S> FromToolContext<'a, S> for MemoryProviderRef<'a> {
+impl<'a> FromToolContext<'a> for MemoryProviderRef<'a> {
     fn from_tool_context(
-        ctx: &'a ToolContext<'a, S>,
+        ctx: &'a ToolContext<'a>,
         _args: &'a serde_json::Value,
     ) -> Result<Self, ToolExtractError> {
         ctx.memory_provider.map(MemoryProviderRef).ok_or_else(|| {

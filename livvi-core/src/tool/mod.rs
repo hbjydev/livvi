@@ -63,17 +63,17 @@ impl From<anyhow::Error> for ToolExtractError {
 /// Context passed to tools when they are invoked by the agent loop.
 ///
 /// This is a catch-all container for "things the agent loop needs to give to the tool that
-/// aren't its arguments". It is parameterised by the application state type `S`, which is
-/// provided by the user when the agent is constructed.
-pub struct ToolContext<'a, S> {
+/// aren't its arguments". Plugin-contributed state is available through the type-erased
+/// [`crate::state::StateMap`], which tools query via the [`State`] extractor.
+pub struct ToolContext<'a> {
     /// The current conversation transcript.
     pub agent_context: &'a context::Context,
 
     /// The provider-supplied ID for this tool call.
     pub tool_call_id: &'a str,
 
-    /// The user-provided application state.
-    pub state: &'a S,
+    /// Plugin-contributed state, keyed by concrete type.
+    pub state: &'a crate::state::StateMap,
 
     /// The configured memory provider, if any.
     pub memory_provider: Option<&'a dyn MemoryProvider>,
@@ -83,10 +83,10 @@ pub struct ToolContext<'a, S> {
 ///
 /// Implemented by extractor types such as [`Input`], [`State`], [`Transcript`], and [`ToolCallId`].
 /// Users can also implement this trait for their own extractor types.
-pub trait FromToolContext<'a, S>: Sized {
+pub trait FromToolContext<'a>: Sized {
     /// Extract the value from the given context and arguments.
     fn from_tool_context(
-        ctx: &'a ToolContext<'a, S>,
+        ctx: &'a ToolContext<'a>,
         args: &'a Value,
     ) -> Result<Self, ToolExtractError>;
 }
@@ -97,12 +97,12 @@ pub trait FromToolContext<'a, S>: Sized {
 /// and [`schemars::JsonSchema`]; the latter is used to derive the tool's JSON Schema input.
 pub struct Input<T>(pub T);
 
-impl<'a, S, T> FromToolContext<'a, S> for Input<T>
+impl<'a, T> FromToolContext<'a> for Input<T>
 where
     T: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn from_tool_context(
-        _ctx: &'a ToolContext<'a, S>,
+        _ctx: &'a ToolContext<'a>,
         args: &'a Value,
     ) -> Result<Self, ToolExtractError> {
         let schema = schemars::schema_for!(T);
@@ -116,31 +116,33 @@ where
     }
 }
 
-/// Extracts a reference to a piece of the application state.
+/// Extracts a reference to plugin-contributed state of type `T` from the [`crate::state::StateMap`].
 ///
-/// `T` is the target type, extracted from the context's state via [`AsRef`]. The function
-/// parameter looks like `State(state): State<AppState>` where the agent's state is, for example,
-/// `Arc<AppState>`.
-pub struct State<'a, T: ?Sized>(pub &'a T);
+/// The function parameter looks like `State(state): State<'_, DiscordState>`. The entry is
+/// provided at runtime by a plugin (`PluginContext::insert_state`) or
+/// `AgentBuilder::with_state`; a missing entry is a runtime extraction error.
+pub struct State<'a, T: Send + Sync + 'static>(pub &'a T);
 
-impl<'a, S, T: ?Sized> FromToolContext<'a, S> for State<'a, T>
-where
-    S: AsRef<T>,
-{
+impl<'a, T: Send + Sync + 'static> FromToolContext<'a> for State<'a, T> {
     fn from_tool_context(
-        ctx: &'a ToolContext<'a, S>,
+        ctx: &'a ToolContext<'a>,
         _args: &'a Value,
     ) -> Result<Self, ToolExtractError> {
-        Ok(State(ctx.state.as_ref()))
+        ctx.state.get::<T>().map(State).ok_or_else(|| {
+            ToolExtractError::MissingResource(format!(
+                "state not registered: {}",
+                std::any::type_name::<T>()
+            ))
+        })
     }
 }
 
 /// Extracts a reference to the current conversation transcript.
 pub struct Context<'a>(pub &'a context::Context);
 
-impl<'a, S> FromToolContext<'a, S> for Context<'a> {
+impl<'a> FromToolContext<'a> for Context<'a> {
     fn from_tool_context(
-        ctx: &'a ToolContext<'a, S>,
+        ctx: &'a ToolContext<'a>,
         _args: &'a Value,
     ) -> Result<Self, ToolExtractError> {
         Ok(Context(ctx.agent_context))
@@ -150,9 +152,9 @@ impl<'a, S> FromToolContext<'a, S> for Context<'a> {
 /// Extracts the provider-supplied tool call ID.
 pub struct ToolCallId<'a>(pub &'a str);
 
-impl<'a, S> FromToolContext<'a, S> for ToolCallId<'a> {
+impl<'a> FromToolContext<'a> for ToolCallId<'a> {
     fn from_tool_context(
-        ctx: &'a ToolContext<'a, S>,
+        ctx: &'a ToolContext<'a>,
         _args: &'a Value,
     ) -> Result<Self, ToolExtractError> {
         Ok(ToolCallId(ctx.tool_call_id))
@@ -199,22 +201,22 @@ pub struct ToolDefinition {
 
 /// Implemented by the generated wrapper for a `#[tool]` function.
 ///
-/// This trait is object-safe and is used by [`Tools`] to store heterogeneous tools.
+/// This trait is object-safe and is used by [`Toolbox`] to store heterogeneous tools.
 #[async_trait]
-pub trait ToolHandler<S: Send + Sync + 'static>: Send + Sync + 'static {
+pub trait ToolHandler: Send + Sync + 'static {
     /// The static schema for this tool.
     fn schema(&self) -> ToolDefinition;
 
     /// Invoke the tool with the given context and arguments.
-    async fn call(&self, ctx: &ToolContext<'_, S>, args: Value) -> ToolCallOutput;
+    async fn call(&self, ctx: &ToolContext<'_>, args: Value) -> ToolCallOutput;
 }
 
-/// A registry of tools, parameterised by the application state type.
-pub struct Toolbox<S: Send + Sync + 'static> {
-    tools: HashMap<String, Arc<dyn ToolHandler<S>>>,
+/// A registry of tools.
+pub struct Toolbox {
+    tools: HashMap<String, Arc<dyn ToolHandler>>,
 }
 
-impl<S: Send + Sync + 'static> Clone for Toolbox<S> {
+impl Clone for Toolbox {
     fn clone(&self) -> Self {
         Toolbox {
             tools: self.tools.clone(),
@@ -222,7 +224,7 @@ impl<S: Send + Sync + 'static> Clone for Toolbox<S> {
     }
 }
 
-impl<S: Send + Sync + 'static> Toolbox<S> {
+impl Toolbox {
     /// Create an empty tool registry.
     pub fn new() -> Self {
         Toolbox {
@@ -251,7 +253,7 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
     ///
     /// The tool is typically a `#[tool]` function; the macro generates a wrapper struct that
     /// implements [`ToolHandler`].
-    pub fn add_tool(&mut self, tool: impl ToolHandler<S> + 'static) {
+    pub fn add_tool(&mut self, tool: impl ToolHandler + 'static) {
         let schema = tool.schema();
         self.tools.insert(schema.name, Arc::new(tool));
     }
@@ -270,12 +272,12 @@ impl<S: Send + Sync + 'static> Toolbox<S> {
     }
 
     /// Returns the tool with the given name, if any.
-    pub fn get_tool(&self, tool_name: &str) -> Option<&dyn ToolHandler<S>> {
+    pub fn get_tool(&self, tool_name: &str) -> Option<&dyn ToolHandler> {
         self.tools.get(tool_name).map(|tool| tool.as_ref())
     }
 }
 
-impl<S: Send + Sync + 'static> Default for Toolbox<S> {
+impl Default for Toolbox {
     fn default() -> Self {
         Toolbox::new()
     }
@@ -298,9 +300,16 @@ mod tests {
         Ok(())
     }
 
+    struct SomeType;
+
+    #[livvi_core_macros::tool]
+    async fn state_tool(State(_state): State<'_, SomeType>) -> Result<(), ()> {
+        Ok(())
+    }
+
     #[test]
     fn required_tool_names_returns_only_required_tools() {
-        let mut toolbox = Toolbox::<()>::new();
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(required_tool);
         toolbox.add_tool(optional_tool);
 
@@ -312,7 +321,7 @@ mod tests {
 
     #[test]
     fn required_tool_flag_is_set_in_schema() {
-        let mut toolbox = Toolbox::<()>::new();
+        let mut toolbox = Toolbox::new();
         toolbox.add_tool(required_tool);
         toolbox.add_tool(optional_tool);
 
@@ -321,5 +330,34 @@ mod tests {
 
         let optional = toolbox.get_tool("optional_tool").unwrap().schema();
         assert!(!optional.is_required);
+    }
+
+    #[tokio::test]
+    async fn missing_state_yields_extraction_error() {
+        let states = crate::state::StateMap::new();
+        let mut toolbox = Toolbox::new();
+        toolbox.add_tool(state_tool);
+
+        let agent_context = crate::context::Context::new("soul", None);
+        let result = toolbox
+            .get_tool("state_tool")
+            .unwrap()
+            .call(
+                &ToolContext {
+                    agent_context: &agent_context,
+                    tool_call_id: "call-1",
+                    state: &states,
+                    memory_provider: None,
+                },
+                serde_json::json!({}),
+            )
+            .await;
+
+        match result {
+            ToolCallOutput::Error(e) => {
+                assert!(e.contains("state not registered"), "error: {e}")
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
     }
 }
