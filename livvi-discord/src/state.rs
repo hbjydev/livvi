@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use serenity::all::{ChannelId, CreateMessage, Http, MessageId, ReactionType};
+use serenity::all::{ChannelId, CreateMessage, Http, Message, MessageId, ReactionType};
 
 /// A Discord-specific state object that wraps the serenity HTTP client.
 ///
@@ -11,6 +11,12 @@ use serenity::all::{ChannelId, CreateMessage, Http, MessageId, ReactionType};
 #[derive(Clone)]
 pub struct DiscordState {
     http: Arc<Http>,
+}
+
+impl AsRef<DiscordState> for DiscordState {
+    fn as_ref(&self) -> &DiscordState {
+        self
+    }
 }
 
 impl DiscordState {
@@ -49,6 +55,25 @@ impl DiscordState {
             .await?;
 
         Ok(())
+    }
+
+    /// Fetch a message from a channel, including its attachment metadata.
+    ///
+    /// Requires the bot to have read access to the channel.
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            otel.name = "discord.get_message",
+            channel_id = channel_id,
+            message_id = message_id,
+        ),
+    )]
+    pub async fn get_message(&self, channel_id: u64, message_id: u64) -> Result<Message> {
+        let message = ChannelId::new(channel_id)
+            .message(&*self.http, MessageId::new(message_id))
+            .await?;
+
+        Ok(message)
     }
 
     /// Send a reaction to a Discord message.

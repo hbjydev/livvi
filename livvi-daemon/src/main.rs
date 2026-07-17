@@ -7,7 +7,7 @@ use livvi_core::{
     summarizer::Summarizer,
     tool::Toolbox,
 };
-use livvi_discord::tools::{discord_react, discord_send};
+use livvi_discord::tools::{discord_react, discord_read_attachments, discord_send};
 use livvi_discord::{DISCORD_INSTRUCTIONS, DiscordState, DiscordTransport};
 use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
 use livvi_memini::MeminiMemoryProvider;
@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
             let mut toolbox = Toolbox::new();
             toolbox.add_tool(discord_send);
             toolbox.add_tool(discord_react);
+            toolbox.add_tool(discord_read_attachments);
             if web_configured {
                 toolbox.add_tool(web_fetch);
                 toolbox.add_tool(web_search);
