@@ -58,6 +58,25 @@ impl EventHandler for Handler {
             .and_then(|m| m.nick.clone())
             .unwrap_or_else(|| msg.author.name.clone());
 
+        let attachments_summary = if msg.attachments.is_empty() {
+            None
+        } else {
+            Some(
+                msg.attachments
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            "{} ({}, {} bytes)",
+                            a.filename,
+                            a.content_type.as_deref().unwrap_or("unknown type"),
+                            a.size
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        };
+
         let event = Interrupt::external_event(livvi_core::interrupt::ExternalEvent {
             transport_kind: "discord".to_string(),
             event_type: "message".to_string(),
@@ -79,6 +98,7 @@ impl EventHandler for Handler {
                     "guild_id": msg.guild_id.map(|g| g.to_string()),
                     "is_dm": msg.guild_id.is_none(),
                     "message_id": msg.id.to_string(),
+                    "attachments": attachments_summary,
                 }),
             },
             person_id: None,
