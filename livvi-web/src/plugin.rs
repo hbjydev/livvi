@@ -5,23 +5,30 @@ use crate::WebState;
 use crate::tools::{web_fetch, web_search};
 
 /// Self-registering web tools plugin.
+///
+/// `web_fetch` is always registered; `web_search` is only registered when a
+/// SearxNG URL is configured.
 pub struct WebPlugin {
-    searxng_url: String,
+    searxng_url: Option<String>,
 }
 
 impl WebPlugin {
-    pub fn new(searxng_url: impl Into<String>) -> Self {
-        Self {
-            searxng_url: searxng_url.into(),
-        }
+    pub fn new(searxng_url: Option<String>) -> Self {
+        Self { searxng_url }
     }
 
-    /// Build from `LIVVI_SEARXNG_URL`. Returns `None` when unset or empty.
-    pub fn from_env() -> Option<Self> {
+    /// Build from `LIVVI_SEARXNG_URL`. Always available; without a URL only
+    /// `web_fetch` is registered.
+    pub fn from_env() -> Self {
         let url = std::env::var("LIVVI_SEARXNG_URL")
             .ok()
-            .filter(|s| !s.is_empty())?;
-        Some(Self::new(url))
+            .filter(|s| !s.is_empty());
+        Self::new(url)
+    }
+
+    /// Whether a SearxNG URL is configured (i.e. `web_search` will be registered).
+    pub fn has_search(&self) -> bool {
+        self.searxng_url.is_some()
     }
 }
 
@@ -31,9 +38,11 @@ impl Plugin for WebPlugin {
     }
 
     fn register(self, ctx: &mut PluginContext) -> Result<()> {
-        ctx.insert_state(WebState::new(Some(self.searxng_url)));
+        ctx.insert_state(WebState::new(self.searxng_url.clone()));
         ctx.add_tool(web_fetch);
-        ctx.add_tool(web_search);
+        if self.searxng_url.is_some() {
+            ctx.add_tool(web_search);
+        }
         Ok(())
     }
 }

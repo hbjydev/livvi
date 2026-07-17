@@ -26,21 +26,21 @@ Livvi is configured entirely through environment variables. This document lists 
 
 ## Memory (Memini)
 
-If both base URL and API key are set, Livvi persists conversation memory through a Memini-compatible server. If either is missing, memory tools become no-ops.
+If both base URL and API key are set, Livvi persists conversation memory through a Memini-compatible server. If either is missing, the memory tools are not registered.
 
-The `livvi-memini` crate also recognises the shorter `MEMINI_*` aliases when using `MeminiMemoryProvider::from_env()` directly, but the daemon uses the `LIVVI_MEMINI_*` forms.
+The daemon prefers the `LIVVI_MEMINI_*` forms and falls back to the shorter `MEMINI_*` aliases (the same aliases `MeminiMemoryProvider::from_env()` recognises when used directly).
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
-| `LIVVI_MEMINI_BASE_URL` | — | Memini API base URL. `MEMINI_BASE_URL` or `MEMINI_URL` are also accepted by the Memini crate. |
-| `LIVVI_MEMINI_API_KEY` | — | Memini API key. `MEMINI_API_KEY` or `MEMINI_TOKEN` are also accepted by the Memini crate. |
-| `LIVVI_MEMINI_NAMESPACE` | `livvi` | Namespace prefix for memory entries. `MEMINI_NAMESPACE` is also accepted by the Memini crate. |
+| `LIVVI_MEMINI_BASE_URL` | — | Memini API base URL. Falls back to `MEMINI_BASE_URL` or `MEMINI_URL`. |
+| `LIVVI_MEMINI_API_KEY` | — | Memini API key. Falls back to `MEMINI_API_KEY` or `MEMINI_TOKEN`. |
+| `LIVVI_MEMINI_NAMESPACE` | `livvi` | Namespace prefix for memory entries. Falls back to `MEMINI_NAMESPACE`. |
 
 ## Web tools
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
-| `LIVVI_SEARXNG_URL` | — | SearxNG instance URL. If set, `web_search` and `web_fetch` are registered. If empty or unset, both tools are disabled. |
+| `LIVVI_SEARXNG_URL` | — | SearxNG instance URL. `web_fetch` is always registered. If set, `web_search` is also registered; if empty or unset, `web_search` is disabled. |
 
 ## Storage
 
