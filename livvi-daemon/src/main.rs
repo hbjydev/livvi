@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use livvi_core::{agent::Agent, compaction::WindowCompactor, summarizer::Summarizer};
 use livvi_discord::DiscordPlugin;
 use livvi_lcm::{LcmCompactor, LcmConfig, LcmSqliteStore};
@@ -11,7 +11,7 @@ use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::Sd
 use std::env;
 use std::io::IsTerminal;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -81,37 +81,50 @@ async fn main() -> Result<()> {
             "memini not configured (LIVVI_MEMINI_BASE_URL/LIVVI_MEMINI_API_KEY); memory tools disabled"
         );
     }
-    if let Some(plugin) = WebPlugin::from_env() {
+    let web_plugin = WebPlugin::from_env();
+    if web_plugin.has_search() {
         info!("web_search and web_fetch enabled via LIVVI_SEARXNG_URL");
-        builder = builder.with_plugin(plugin)?;
     } else {
-        info!("LIVVI_SEARXNG_URL not set; web_search and web_fetch disabled");
+        info!("LIVVI_SEARXNG_URL not set; web_fetch enabled, web_search disabled");
     }
+    builder = builder.with_plugin(web_plugin)?;
 
     // Hold a sender so the agent's input channel stays open even with no transports.
     let _interrupt_tx = builder.interrupt_sender();
 
     let (_agent_events, agent, mut plugin_tasks) = builder.build()?;
 
-    let agent_handle = tokio::spawn(async move {
-        if let Err(e) = agent.run().await {
-            error!("agent loop error: {e}");
-        }
-    });
+    let agent_handle = tokio::spawn(async move { agent.run().await });
 
-    tokio::select! {
+    let result = tokio::select! {
         _ = shutdown_signal() => {
             info!("Shutdown signal received, terminating...");
+            Ok(())
         }
-        _ = agent_handle => {
-            warn!("agent loop exited");
+        result = agent_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    warn!("agent loop exited");
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(e.context("agent loop error")),
+                Err(e) => Err(anyhow!("agent loop task panicked: {e}")),
+            }
         }
-        _ = plugin_tasks.join_next(), if !plugin_tasks.is_empty() => {
-            warn!("a plugin task exited");
+        result = plugin_tasks.join_next(), if !plugin_tasks.is_empty() => {
+            match result {
+                Some(Ok(Ok(()))) => {
+                    warn!("a plugin task exited");
+                    Ok(())
+                }
+                Some(Ok(Err(e))) => Err(e.context("plugin task failed")),
+                Some(Err(e)) => Err(anyhow!("plugin task panicked: {e}")),
+                None => Ok(()),
+            }
         }
-    }
+    };
 
-    Ok(())
+    result
 }
 
 fn init_tracing() -> Result<()> {

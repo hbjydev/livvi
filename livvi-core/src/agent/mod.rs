@@ -4,6 +4,7 @@ use anyhow::{Context as _, Result, anyhow};
 use livvi_store::ConversationId;
 use lru::LruCache;
 use tokio::sync::{broadcast, mpsc};
+use tracing::Instrument;
 
 use crate::{
     AgentEvent,
@@ -224,13 +225,25 @@ impl Agent {
                     while let Some(interrupt) = next_interrupt {
                         let interrupt = match &self.store {
                             Some(store) => {
-                                match crate::resolve::resolve_interrupt(interrupt, store.as_ref())
-                                    .await
-                                {
+                                let resolve_span = tracing::info_span!(
+                                    "resolve_interrupt",
+                                    otel.status_code = tracing::field::Empty,
+                                    otel.status_description = tracing::field::Empty,
+                                );
+                                let result =
+                                    crate::resolve::resolve_interrupt(interrupt, store.as_ref())
+                                        .instrument(resolve_span.clone())
+                                        .await;
+                                match result {
                                     Ok(Some(resolved)) => resolved,
                                     // AllowTool: permission granted, nothing to dispatch
                                     Ok(None) => break,
                                     Err(e) => {
+                                        resolve_span.record("otel.status_code", "ERROR");
+                                        resolve_span.record(
+                                            "otel.status_description",
+                                            tracing::field::display(&e),
+                                        );
                                         tracing::error!("failed to resolve interrupt: {e}");
                                         break;
                                     }
