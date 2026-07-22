@@ -106,8 +106,7 @@ impl Compactor for LcmCompactor {
                 .await?;
         }
 
-        let total_raw = state.raw_messages.len();
-        let tail_start = total_raw.saturating_sub(self.config.fresh_tail_count);
+        let tail_start = safe_tail_start(&state.raw_messages, self.config.fresh_tail_count);
         let eligible = &state.raw_messages[..tail_start];
 
         let token_proxy: usize = eligible
@@ -158,14 +157,22 @@ impl Compactor for LcmCompactor {
         for summary in active {
             result.push(Message::system(summary.content.clone()));
         }
-        let new_tail_start = state
-            .raw_messages
-            .len()
-            .saturating_sub(self.config.fresh_tail_count);
+        let new_tail_start = safe_tail_start(&state.raw_messages, self.config.fresh_tail_count);
         result.extend(state.raw_messages[new_tail_start..].iter().cloned());
 
         Ok(result)
     }
+}
+
+/// Compute the start index of the fresh tail without splitting a tool-call
+/// group: if the tail would begin with tool results, walk back to include the
+/// assistant message that produced them.
+fn safe_tail_start(messages: &[Message], fresh_tail_count: usize) -> usize {
+    let mut start = messages.len().saturating_sub(fresh_tail_count);
+    while start > 0 && matches!(messages[start].role, Role::Tool) {
+        start -= 1;
+    }
+    start
 }
 
 impl LcmCompactor {
@@ -261,8 +268,42 @@ fn build_summary_prompt(depth: usize, context: &[Message]) -> Vec<Message> {
 
     let mut prompt = Vec::with_capacity(context.len() + 1);
     prompt.push(Message::system(instruction));
-    prompt.extend(context.iter().cloned());
+    prompt.extend(context.iter().map(flatten_for_summary));
     prompt
+}
+
+/// Render a message as plain text for summarization. Tool calls and results
+/// are flattened so the prompt never contains `tool` role messages or
+/// `tool_calls`, which strict providers reject when a chunk boundary splits a
+/// tool-call group.
+fn flatten_for_summary(msg: &Message) -> Message {
+    match msg.role {
+        Role::Tool => {
+            let mut flattened = Message::user(
+                format!(
+                    "[tool result {}]: {}",
+                    msg.tool_call_id.as_deref().unwrap_or("unknown"),
+                    msg.content_str()
+                ),
+                msg.person_id.clone(),
+            );
+            flattened.message_id = msg.message_id;
+            flattened
+        }
+        Role::Assistant if msg.tool_calls.is_some() => {
+            let mut text = msg.content_str().to_string();
+            for call in msg.tool_calls.as_deref().unwrap_or_default() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&format!("[tool call {}({})]", call.name, call.input));
+            }
+            let mut flattened = Message::assistant(text, None::<&str>);
+            flattened.message_id = msg.message_id;
+            flattened
+        }
+        _ => msg.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -388,5 +429,67 @@ mod tests {
 
         let stored_summaries = store.load_summaries(&conversation_id).await.unwrap();
         assert_eq!(stored_summaries.len(), 2);
+    }
+
+    #[test]
+    fn summary_prompt_flattens_tool_messages() {
+        use livvi_core::model::ToolCall;
+        use serde_json::json;
+
+        let context = vec![
+            Message::user("run the thing", None),
+            Message::with_tool_calls(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "calc".to_string(),
+                    input: json!({"a": 1}),
+                }],
+                None::<&str>,
+                None::<&str>,
+            ),
+            Message::tool_result("call-1", "42"),
+        ];
+
+        let prompt = build_summary_prompt(0, &context);
+
+        assert!(prompt.iter().all(|m| !matches!(m.role, Role::Tool)));
+        assert!(prompt.iter().all(|m| m.tool_calls.is_none()));
+        assert!(
+            prompt
+                .iter()
+                .any(|m| m.content_str().contains("[tool call calc("))
+        );
+        assert!(
+            prompt
+                .iter()
+                .any(|m| m.content_str().contains("[tool result call-1]: 42"))
+        );
+    }
+
+    #[test]
+    fn tail_start_does_not_split_tool_groups() {
+        use livvi_core::model::ToolCall;
+        use serde_json::json;
+
+        let messages = vec![
+            Message::user("one", None),
+            Message::user("two", None),
+            Message::with_tool_calls(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "calc".to_string(),
+                    input: json!({}),
+                }],
+                None::<&str>,
+                None::<&str>,
+            ),
+            Message::tool_result("call-1", "42"),
+            Message::user("three", None),
+        ];
+
+        // A naive tail of 2 would start at the orphaned tool result.
+        let start = safe_tail_start(&messages, 2);
+        assert_eq!(start, 2);
+        assert!(matches!(messages[start].role, Role::Assistant));
     }
 }
